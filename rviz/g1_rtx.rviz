@@ -1,0 +1,144 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /LiDAR1
+        - /RobotModel1
+      Splitter Ratio: 0.5
+    Tree Height: 700
+  - Class: rviz_common/Views
+    Name: Views
+
+Visualization Manager:
+  Class: ""
+  Name: root
+  Global Options:
+    Background Color: 40; 42; 48
+    # The TF tree is rooted at World, so the robot's pelvis moves relative to
+    # it and you see the fall. Setting this to pelvis instead pins the robot
+    # and the world appears to move around it.
+    Fixed Frame: World
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 100; 100; 100
+      Alpha: 0.3
+
+    # Needs /robot_description, which the simulator does NOT publish - run
+    # robot_state_publisher alongside it (see launch/g1_bringup.launch.py).
+    # Without it you get TF axes but no meshes.
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Alpha: 1
+      Visual Enabled: true
+      Collision Enabled: false
+
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: false
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 0.25
+      Update Interval: 0
+      # Sim time can jump when the simulator is paused or restarted; a longer
+      # timeout stops frames disappearing when that happens.
+      Frame Timeout: 60
+
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LiDAR
+      Enabled: true
+      Topic:
+        Value: /livox/mid360/points
+        Depth: 5
+        # Must be best-effort: the publisher uses it, and a reliable
+        # subscriber silently receives nothing from a best-effort publisher.
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+      Style: Points
+      Size (Pixels): 2
+      Alpha: 1
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Intensity Bounds: true
+      # Each message carries one emitterState cycle, so holding a few frames
+      # builds up the full non-repetitive Livox pattern instead of showing a
+      # single thin slice of it.
+      Decay Time: 0.5
+
+    - Class: rviz_default_plugins/Image
+      Name: CameraRGB
+      Enabled: true
+      Topic:
+        Value: /g1/camera/rgb
+        Depth: 1
+        Reliability Policy: Reliable
+      Max Value: 1
+      Min Value: 0
+
+    - Class: rviz_default_plugins/Image
+      Name: CameraDepth
+      Enabled: false
+      Topic:
+        Value: /g1/camera/depth
+        Depth: 1
+        Reliability Policy: Reliable
+
+    - Class: rviz_default_plugins/Image
+      Name: CameraSemantic
+      Enabled: false
+      Topic:
+        Value: /g1/camera/semantic
+        Depth: 1
+        Reliability Policy: Reliable
+
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Detections
+      Enabled: true
+      Topic:
+        Value: /g1/detection_markers
+        Depth: 10
+        Reliability Policy: Reliable
+      Namespaces:
+        {}
+
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 12
+      Focal Point:
+        X: 2
+        Y: 0
+        Z: 0.8
+      Pitch: 0.3
+      Yaw: 2.4
+      Target Frame: World
+    Saved: ~
+
+Window Geometry:
+  Height: 1000
+  Width: 1600
+  Displays:
+    collapsed: false
+  CameraRGB:
+    collapsed: false

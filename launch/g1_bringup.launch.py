@@ -19,7 +19,23 @@ from launch_ros.actions import Node
 
 REPO = Path(__file__).resolve().parent.parent
 URDF = REPO.parent / "OmniPerception/LidarSensor/LidarSensor/resources/robots/g1_29/g1_29dof.urdf"
-RVIZ_CONFIG = REPO / "rviz/g1.rviz"
+RVIZ_CONFIG = REPO / "rviz/g1_rtx.rviz"
+
+
+def load_robot_description() -> str:
+    """Read the URDF with mesh paths made absolute.
+
+    The URDF refers to its meshes as ``meshes/foo.STL``, which RViz resolves
+    against its own working directory and fails to find - the cause of the
+    "Could not load resource [meshes/...]" errors. Rewriting them to absolute
+    file:// URIs makes the robot render.
+    """
+    if not URDF.exists():
+        return ""
+
+    text = URDF.read_text()
+    mesh_root = URDF.parent
+    return text.replace('filename="meshes/', f'filename="file://{mesh_root}/meshes/')
 
 # Sim time is non-negotiable: the sim publishes /clock and every timestamp here
 # comes from it, so a node on wall-clock time would mis-order every transform.
@@ -57,7 +73,7 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
                 parameters=[
                     USE_SIM_TIME,
-                    {"robot_description": URDF.read_text() if URDF.exists() else ""},
+                    {"robot_description": load_robot_description()},
                 ],
                 remappings=[("/joint_states", "/g1/joint_states")],
             ),

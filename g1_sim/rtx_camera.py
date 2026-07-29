@@ -211,7 +211,11 @@ def attach_robot_state_publishers(
     values = [
         ("PublishClock.inputs:topicName", TOPIC_CLOCK),
         ("PublishTF.inputs:topicName", "/tf"),
-        ("PublishTF.inputs:parentPrim", [articulation_prim]),
+        # Root the tree at /World so the pelvis is a floating base whose pose
+        # moves relative to it - that is what makes the robot visibly fall in
+        # RViz. Rooting at the pelvis instead pins it to the origin and only
+        # the joints appear to move.
+        ("PublishTF.inputs:parentPrim", ["/World"]),
         # Target the articulation itself so every link - and so every joint
         # frame - is emitted, rather than just the reference root's transform.
         ("PublishTF.inputs:targetPrims", [articulation_prim]),

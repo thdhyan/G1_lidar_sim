@@ -249,7 +249,12 @@ def main() -> None:
             step += 1
 
             if publisher is not None:
-                sent = publisher.publish(step / SIM_RATE_HZ)
+                # Every step contributes its slice of the sweep; publish() then
+                # emits the assembled scan at the sensor's rate.
+                publisher.accumulate()
+                # Stamp from the simulator's own clock so the cloud agrees
+                # with /clock and with the TF the action graph publishes.
+                sent = publisher.publish(sim.current_time)
                 if sent:
                     scans += 1
                     last_points = sent

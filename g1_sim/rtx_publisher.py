@@ -48,6 +48,8 @@ class RtxLidarPublisher:
         self.max_points = max_points
         self.publish_period = 1.0 / publish_rate
         self._last_publish = -float("inf")
+        # Slices of the sweep awaiting the next publish.
+        self._pending: list[tuple] = []
 
         # One annotator per prim. Isaac Sim 6.0 dropped the RtxSensorCpu prefix
         # this annotator carried in earlier releases.
@@ -79,15 +81,39 @@ class RtxLidarPublisher:
             f"publishing {topic} in frame {frame_id} from {len(prim_paths)} prims"
         )
 
+    def accumulate(self) -> int:
+        """Collect one render's worth of returns. Call every simulation step.
+
+        Each render yields only the emitters that fired in that frame, so a
+        single read is a thin slice of the sweep. Accumulating between
+        publishes is what turns those slices into a full scan.
+
+        Returns the number of points collected this call.
+        """
+        points, intensities = self._gather()
+        if points is None:
+            return 0
+        self._pending.append((points, intensities))
+        return len(points)
+
     def publish(self, sim_time: float) -> int:
-        """Publish one merged scan if due. Returns the number of points sent."""
+        """Publish the accumulated scan if due. Returns points sent."""
         if sim_time - self._last_publish < self.publish_period:
             return 0
         self._last_publish = sim_time
 
-        points, intensities = self._gather()
-        if points is None:
+        if not self._pending:
             return 0
+
+        points = np.vstack([p for p, _ in self._pending])
+        intensities = np.concatenate([i for _, i in self._pending])
+        self._pending.clear()
+
+        if len(points) > self.max_points:
+            # Stride rather than slice: a contiguous slice would take one part
+            # of the sweep, whereas striding preserves the pattern's shape.
+            idx = np.linspace(0, len(points) - 1, self.max_points).astype(np.int64)
+            points, intensities = points[idx], intensities[idx]
 
         self.publisher.publish(self._to_message(points, intensities, sim_time))
         return len(points)
@@ -131,12 +157,6 @@ class RtxLidarPublisher:
         points, intensities = points[keep], intensities[keep]
         if len(points) == 0:
             return None, None
-
-        if len(points) > self.max_points:
-            # Stride rather than slice: a contiguous slice would take one part
-            # of the sweep, whereas striding preserves the pattern's shape.
-            idx = np.linspace(0, len(points) - 1, self.max_points).astype(np.int64)
-            points, intensities = points[idx], intensities[idx]
 
         return points, intensities
 
