@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Generate RTX LiDAR configs for the Livox Mid-360 from its real scan pattern.
+
+The Mid-360's firing pattern is non-repetitive: it does not reset every frame,
+it repeats after N frames. RTX LiDAR models this with ``emitterStates`` - one
+entry per frame in the cycle - advanced by ``stateResolutionStep``.
+
+``mid360.npy`` holds 800,000 (theta, phi) pairs. At the real sensor's
+200,000 points/s and 10 Hz that is 20,000 points per frame, so the file is
+exactly 40 frames of firing pattern.
+
+The Hydra API caps a single LiDAR prim at ~5 MB of emitter data, which is
+roughly 200k emitters. 40 x 20,000 = 800k does not fit, so the pattern is split
+across several prims mounted at the same transform - the approach described in
+IsaacSim discussion #685. Their union reproduces the full pattern.
+
+Writes one JSON per prim, in the schema of the shipped
+``Example_Solid_State.json``:
+
+    python scripts/gen_mid360_rtx_config.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_PATTERN = (
+    REPO.parent
+    / "OmniPerception/LidarSensor/LidarSensor/sensor_pattern/sensor_lidar/scan_mode/mid360.npy"
+)
+DEFAULT_OUT = REPO / "assets/lidar_configs"
+
+# Real Mid-360 figures.
+POINTS_PER_SECOND = 200_000
+SCAN_RATE_HZ = 10.0
+POINTS_PER_FRAME = int(POINTS_PER_SECOND / SCAN_RATE_HZ)  # 20,000
+
+# Keep each prim under the ~5 MB Hydra limit (~200k emitters). 4 prims x 10
+# frames x 20,000 = 800k total, i.e. 200k each.
+NUM_PRIMS = 4
+
+
+def build_emitter_state(chunk: np.ndarray) -> dict:
+    """Turn one frame of (theta, phi) radians into an emitterState entry.
+
+    ``fireTimeNs`` spreads the frame's points evenly across one scan period,
+    which is what gives the sweep its time structure.
+    """
+    azimuth = np.degrees(chunk[:, 0]).astype(np.float64)
+    elevation = np.degrees(chunk[:, 1]).astype(np.float64)
+    n = len(chunk)
+
+    # RTX expects azimuth in [-180, 180]; the .npy stores [0, 360].
+    azimuth = np.where(azimuth > 180.0, azimuth - 360.0, azimuth)
+
+    frame_ns = int(1e9 / SCAN_RATE_HZ)
+    fire_time = np.linspace(0, frame_ns, n, endpoint=False).astype(np.int64)
+
+    return {
+        "azimuthDeg": [round(v, 4) for v in azimuth.tolist()],
+        "elevationDeg": [round(v, 4) for v in elevation.tolist()],
+        "fireTimeNs": fire_time.tolist(),
+        "channelId": list(range(1, n + 1)),
+        "rangeId": [0] * n,
+        "bank": [0] * n,
+    }
+
+
+def build_profile(states: list[dict], model_name: str, max_range: float) -> dict:
+    """Assemble the RTX LiDAR profile around a list of emitter states."""
+    n_emitters = len(states[0]["azimuthDeg"])
+
+    return {
+        "class": "sensor",
+        "type": "lidar",
+        "name": model_name,
+        "driveWorksId": "GENERIC",
+        "profile": {
+            # SOLID_STATE is what makes RTX walk emitterStates rather than
+            # synthesise a rotating pattern of its own.
+            "scanType": "solidState",
+            "intensityProcessing": "normalization",
+            "rayType": "IDEALIZED",
+            "nearRangeM": 0.1,
+            "farRangeM": max_range,
+            "rangeResolutionM": 0.004,
+            "rangeAccuracyM": 0.02,
+            "avgPowerW": 0.002,
+            "minReflectance": 0.1,
+            "minReflectanceRange": float(max_range),
+            "wavelengthNm": 905.0,
+            "pulseTimeNs": 6,
+            "maxReturns": 1,
+            "scanRateBaseHz": SCAN_RATE_HZ,
+            "patternFiringRateHz": int(SCAN_RATE_HZ),
+            "numberOfEmitters": n_emitters,
+            "numberOfChannels": n_emitters,
+            "numLines": 1,
+            "numRaysPerLine": [n_emitters],
+            "rangeCount": 1,
+            "ranges": [{"min": 0.1, "max": max_range}],
+            "azimuthErrorMean": 0.0,
+            "azimuthErrorStd": 0.015,
+            "elevationErrorMean": 0.0,
+            "elevationErrorStd": 0.015,
+            "intensityMappingType": "LINEAR",
+            "validStartAzimuthDeg": 0.0,
+            "validEndAzimuthDeg": 360.0,
+            # Advance one emitterState per frame, so the sequence plays in
+            # order and wraps - reproducing the non-repetitive sweep.
+            "stateResolutionStep": 1,
+            "emitterStateCount": len(states),
+            "emitterStates": states,
+        },
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pattern", type=str, default=str(DEFAULT_PATTERN))
+    parser.add_argument("--output", type=str, default=str(DEFAULT_OUT))
+    parser.add_argument("--num-prims", type=int, default=NUM_PRIMS)
+    parser.add_argument("--max-range", type=float, default=40.0)
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=0,
+        help="Frames to use (0 = all). Fewer frames means a shorter cycle and smaller files.",
+    )
+    args = parser.parse_args()
+
+    pattern_path = Path(args.pattern)
+    if not pattern_path.exists():
+        raise SystemExit(f"[GEN] pattern not found: {pattern_path}")
+
+    data = np.load(pattern_path)
+    total_frames = len(data) // POINTS_PER_FRAME
+    frames = args.frames if args.frames > 0 else total_frames
+    frames = min(frames, total_frames)
+
+    # Distribute frames over prims as evenly as possible.
+    per_prim = frames // args.num_prims
+    if per_prim == 0:
+        raise SystemExit(f"[GEN] {frames} frames cannot fill {args.num_prims} prims")
+
+    print(f"[GEN] pattern      : {pattern_path.name}  ({len(data):,} points)")
+    print(f"[GEN] frames       : {frames} of {total_frames} available")
+    print(f"[GEN] points/frame : {POINTS_PER_FRAME:,}")
+    print(f"[GEN] prims        : {args.num_prims} x {per_prim} emitterStates")
+
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = []
+    for prim in range(args.num_prims):
+        states = []
+        for i in range(per_prim):
+            frame = prim * per_prim + i
+            start = frame * POINTS_PER_FRAME
+            states.append(build_emitter_state(data[start : start + POINTS_PER_FRAME]))
+
+        name = f"Livox_Mid360_{chr(ord('A') + prim)}"
+        profile = build_profile(states, name, args.max_range)
+
+        path = out_dir / f"{name}.json"
+        path.write_text(json.dumps(profile))
+        size_mb = path.stat().st_size / 1e6
+        written.append((path, size_mb, len(states)))
+
+        # The Hydra API rejects a prim carrying more than ~5 MB of emitter data.
+        flag = "OK  " if size_mb < 5.0 else "OVER"
+        print(f"[GEN] {flag} {path.name}: {len(states)} states, {size_mb:.2f} MB")
+
+    over = [p for p, mb, _ in written if mb >= 5.0]
+    if over:
+        print(f"\n[GEN] FAIL: {len(over)} file(s) exceed the 5 MB Hydra limit.")
+        print("[GEN] Re-run with more --num-prims or fewer --frames.")
+        raise SystemExit(1)
+
+    total = sum(n for _, _, n in written) * POINTS_PER_FRAME
+    print(f"\n[GEN] total emitters: {total:,} across {args.num_prims} prims")
+    print(f"[GEN] cycle length  : {sum(n for _, _, n in written) / args.num_prims / SCAN_RATE_HZ:.1f} s")
+    print("[GEN] PASS")
+
+
+if __name__ == "__main__":
+    main()
