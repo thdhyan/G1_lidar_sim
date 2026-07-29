@@ -1,0 +1,17 @@
+# Generated USD - rebuild with scripts/convert_g1_urdf_to_usd.py
+assets/
+!assets/.gitkeep
+
+# Backup of the patched pip IsaacLab sensors (machine-specific)
+backup_*isaaclab_*/
+.backup_path
+.backup_pip_path
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+*.log
+frames.pdf
+frames.gv
