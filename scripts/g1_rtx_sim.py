@@ -53,6 +53,11 @@ parser.add_argument(
     action="store_true",
     help="Publish each sensor prim on its own topic instead of merging them.",
 )
+parser.add_argument(
+    "--no-room",
+    action="store_true",
+    help="Use flat ground instead of the Nucleus simple_room environment.",
+)
 args_cli = parser.parse_args()
 
 SIM_RATE_HZ = 60.0
@@ -93,7 +98,8 @@ ENABLE_ROS2 = not args_cli.no_ros2
 
 G1_USD = REPO / "assets/g1_29dof_sensors.usd"
 ROBOT_PRIM = "/World/G1"
-PEDESTRIANS = [(12.0, 0.0), (18.0, -4.0), (25.0, 6.0)]
+PEDESTRIANS = [(3.0, 0.0), (4.5, -2.0), (6.0, 2.5)]
+SIMPLE_ROOM_USD = "/Isaac/Environments/Simple_Room/simple_room.usd"
 
 # Loaded so the graph is inspectable in the GUI - Window > Visual Scripting >
 # Action Graph - which is how you confirm what is publishing where.
@@ -120,11 +126,18 @@ def enable_extensions() -> None:
         omni.kit.app.get_app().update()
 
 
-def build_scene() -> None:
-    stage = omni.usd.get_context().get_stage()
-    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-    stage.DefinePrim("/World", "Xform")
+def _build_room(stage) -> None:
+    """Load Nucleus simple_room; fall back to flat ground if unavailable."""
+    try:
+        import isaacsim.core.utils.stage as stage_utils
+
+        stage_utils.add_reference_to_stage(
+            usd_path=SIMPLE_ROOM_USD, prim_path="/World/SimpleRoom"
+        )
+        print(f"[RTX] environment    : {SIMPLE_ROOM_USD}")
+        return
+    except Exception as e:
+        print(f"[RTX] Nucleus room not available ({e}), using flat ground")
 
     ground = UsdGeom.Cube.Define(stage, "/World/ground")
     ground.CreateSizeAttr(1.0)
@@ -134,6 +147,25 @@ def build_scene() -> None:
 
     light = UsdLux.DistantLight.Define(stage, "/World/light")
     light.CreateIntensityAttr(3000.0)
+
+
+def build_scene() -> None:
+    stage = omni.usd.get_context().get_stage()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    stage.DefinePrim("/World", "Xform")
+
+    if not args_cli.no_room:
+        _build_room(stage)
+    else:
+        ground = UsdGeom.Cube.Define(stage, "/World/ground")
+        ground.CreateSizeAttr(1.0)
+        ground.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.1))
+        ground.AddScaleOp().Set(Gf.Vec3f(120.0, 120.0, 0.2))
+        UsdPhysics.CollisionAPI.Apply(ground.GetPrim())
+
+        light = UsdLux.DistantLight.Define(stage, "/World/light")
+        light.CreateIntensityAttr(3000.0)
 
     for i, (x, y) in enumerate(PEDESTRIANS):
         box = UsdGeom.Cube.Define(stage, f"/World/targets/pedestrian_{i}")
@@ -148,8 +180,6 @@ def build_scene() -> None:
         )
     robot = stage.DefinePrim(ROBOT_PRIM, "Xform")
     robot.GetReferences().AddReference(str(G1_USD))
-    # The referenced layer already defines transform ops, so reuse the existing
-    # translate op rather than adding a second one (which USD rejects).
     xform = UsdGeom.Xformable(robot)
     translate = next(
         (op for op in xform.GetOrderedXformOps() if "translate" in op.GetOpName()), None
@@ -228,6 +258,7 @@ def main() -> None:
             # targets need classes or the image is entirely background.
             labels = {f"/World/targets/pedestrian_{i}": "pedestrian" for i in range(len(PEDESTRIANS))}
             labels["/World/ground"] = "ground"
+            labels["/World/SimpleRoom"] = "ground"
             labels[ROBOT_PRIM] = "robot"
             print(f"[RTX] semantics      : {apply_semantics(labels)} prims labelled")
 

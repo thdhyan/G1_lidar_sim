@@ -37,10 +37,17 @@ G1_USD_PATH = str(Path(__file__).resolve().parents[2] / "assets/g1_29dof_sensors
 # --------------------------------------------------------------------------
 
 MID360_PARENT = "torso_link"
-MID360_POS = (0.0002835, 0.00003, 0.4188)
-# rpy = (3.14, 0, 0): the Mid-360 is mounted upside down. As a wxyz quaternion a
-# 180 deg roll is (0, 1, 0, 0). Getting this wrong flips the cloud vertically.
-MID360_QUAT = (0.0, 1.0, 0.0, 0.0)
+# Per Unitree URDF: xyz=(0.0002835, 0.00003, 0.40618), rpy=(0, 0.0401, 0).
+MID360_POS = (0.0002835, 0.00003, 0.40618)
+# wxyz quaternion for rpy=(0, 0.0401, 0) — ~2.3° pitch about Y-axis, no roll.
+import math as _math
+_MID360_PITCH = 0.0401
+MID360_QUAT = (
+    _math.cos(_MID360_PITCH / 2),  # w
+    0.0,                            # x (roll=0)
+    _math.sin(_MID360_PITCH / 2),  # y (pitch)
+    0.0,                            # z (yaw=0)
+)
 
 D435_PARENT = "torso_link"
 D435_POS = (0.0576235, 0.01753, 0.41987)

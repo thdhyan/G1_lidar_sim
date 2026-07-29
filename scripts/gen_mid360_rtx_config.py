@@ -109,8 +109,10 @@ def build_profile(states: list[dict], model_name: str, max_range: float) -> dict
             "elevationErrorMean": 0.0,
             "elevationErrorStd": 0.015,
             "intensityMappingType": "LINEAR",
-            "validStartAzimuthDeg": 0.0,
-            "validEndAzimuthDeg": 360.0,
+            # Emitter azimuth is converted to [-180, 180] above; match the
+            # valid range so RTX does not filter out half the rays.
+            "validStartAzimuthDeg": -180.0,
+            "validEndAzimuthDeg": 180.0,
             # Advance one emitterState per frame, so the sequence plays in
             # order and wraps - reproducing the non-repetitive sweep.
             "stateResolutionStep": 1,

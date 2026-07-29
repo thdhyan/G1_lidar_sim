@@ -44,10 +44,18 @@ CONFIG_DIR = REPO / "assets/lidar_configs"
 # Matches the real device and the generated configs.
 SCAN_RATE_HZ = 10.0
 
-# Mount on torso_link, mirroring g1_29dof.urdf. rpy = (3.14, 0, 0) - the sensor
-# is inverted, so the orientation below carries a 180 deg roll.
-MID360_POS = (0.0002835, 0.00003, 0.4188)
-MID360_QUAT_WXYZ = (0.0, 1.0, 0.0, 0.0)
+# Mount on torso_link per Unitree URDF: xyz=(0.0002835, 0.00003, 0.40618),
+# rpy=(0, 0.0401, 0) — a ~2.3° downward pitch, no roll. The sensor is NOT
+# inverted; the earlier (3.14, 0, 0) roll flipped rays into the robot body.
+MID360_POS = (0.0002835, 0.00003, 0.40618)
+# rpy=(0, 0.0401, 0) → wxyz quaternion for ~2.3° pitch about Y-axis.
+_MID360_PITCH = 0.0401  # radians (~2.3 deg)
+MID360_QUAT_WXYZ = (
+    __import__("math").cos(_MID360_PITCH / 2),  # w
+    0.0,                                        # x (roll=0)
+    __import__("math").sin(_MID360_PITCH / 2),  # y (pitch)
+    0.0,                                        # z (yaw=0)
+)
 
 
 def install_configs(config_dir: Path | str = CONFIG_DIR) -> list[str]:
