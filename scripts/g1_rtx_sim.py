@@ -24,14 +24,23 @@ sys.path.insert(0, str(REPO))
 
 parser = argparse.ArgumentParser(description="G1 with RTX LiDAR Mid-360.")
 parser.add_argument("--headless", action="store_true")
+parser.add_argument(
+    "--num-prims",
+    type=int,
+    default=0,
+    help="Use only the first N sensor prims. Fewer prims means a sparser sweep "
+    "but less GPU load - try 2 if the GUI stutters on a small card.",
+)
 parser.add_argument("--steps", type=int, default=0, help="Stop after N steps; 0 runs forever.")
 parser.add_argument("--no-ros2", action="store_true")
 parser.add_argument("--no-camera", action="store_true", help="Skip the camera (saves render time).")
 parser.add_argument(
     "--config-dir",
     type=str,
-    default="assets/lidar_configs_light",
-    help="Emitter-state profiles. The 'light' set is 4 prims; the full set is 8.",
+    default="assets/lidar_configs_fast",
+    help="Emitter-state profiles. 'fast' is 4 prims x 2 states (5.9 MB, "
+    "quickest to load); 'light' is 4 x 5 (15 MB); the full set is 8 x 5 (30 MB). "
+    "More states means a longer non-repetitive cycle but slower startup.",
 )
 parser.add_argument(
     "--use-og-helper",
@@ -182,6 +191,9 @@ def main() -> None:
         translation=MID360_POS,
         orientation=MID360_QUAT_WXYZ,
     )
+    if args_cli.num_prims and args_cli.num_prims < len(prim_paths):
+        prim_paths = prim_paths[: args_cli.num_prims]
+
     print(f"[RTX] sensor prims   : {len(prim_paths)}")
     for p in prim_paths:
         print(f"[RTX]   {p}")

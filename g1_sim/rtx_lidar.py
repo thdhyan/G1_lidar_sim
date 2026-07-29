@@ -15,6 +15,22 @@ Requires **Isaac Sim 6.0+**. On 5.1 every RTX sensor renders at the simulation
 frame rate regardless of ``tickRate``, so a 10 Hz sensor in a 60 Hz sim fires
 6x too often - which both corrupts the point rate and triggers CUDA buffer
 races. 6.0 enables multi-tick rendering by default and honours ``tickRate``.
+
+Cost. Every prim is a separate ray-tracing pass each render, so the load
+scales with prim count and emitters per state, and RTX LiDAR is expensive on
+a small GPU. Three presets trade sweep completeness against startup and frame
+time:
+
+===========  ======  ==========  =======  =====================
+Preset       Prims   States      Size     Cycle
+===========  ======  ==========  =======  =====================
+``fast``     4       2 each      5.9 MB   0.2 s  (default)
+``light``    4       5 each      15 MB    0.5 s
+(full)       8       5 each      30 MB    0.5 s, denser sweep
+===========  ======  ==========  =======  =====================
+
+If the GUI stutters, pass ``--num-prims 2`` or add ``--no-camera``; the camera
+renders three annotators per frame and is usually the larger cost of the two.
 """
 
 from __future__ import annotations
@@ -60,9 +76,20 @@ def install_configs(config_dir: Path | str = CONFIG_DIR) -> list[str]:
     if not targets:
         raise RuntimeError("could not locate the RTX sensor config directory")
 
+    # These files are ~4 MB each and Isaac Sim re-parses them at load, so only
+    # copy when the destination is missing or stale - an unconditional copy of
+    # 15 MB visibly slows every launch.
+    copied = 0
     for target in targets:
         for profile in profiles:
-            shutil.copy2(profile, target / profile.name)
+            dest = target / profile.name
+            if dest.exists() and dest.stat().st_mtime >= profile.stat().st_mtime:
+                continue
+            shutil.copy2(profile, dest)
+            copied += 1
+
+    if copied:
+        print(f"[RTX] installed {copied} lidar profile(s)")
 
     return [p.stem for p in profiles]
 
