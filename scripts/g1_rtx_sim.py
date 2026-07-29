@@ -26,11 +26,18 @@ parser = argparse.ArgumentParser(description="G1 with RTX LiDAR Mid-360.")
 parser.add_argument("--headless", action="store_true")
 parser.add_argument("--steps", type=int, default=0, help="Stop after N steps; 0 runs forever.")
 parser.add_argument("--no-ros2", action="store_true")
+parser.add_argument("--no-camera", action="store_true", help="Skip the camera (saves render time).")
 parser.add_argument(
     "--config-dir",
     type=str,
     default="assets/lidar_configs_light",
     help="Emitter-state profiles. The 'light' set is 4 prims; the full set is 8.",
+)
+parser.add_argument(
+    "--use-og-helper",
+    action="store_true",
+    help="Publish via ROS2RtxLidarHelper instead of rclpy. It advertises the "
+    "topic but does not emit on this setup; kept for GUI graph inspection.",
 )
 parser.add_argument(
     "--separate-topics",
@@ -59,6 +66,12 @@ import omni.timeline
 import omni.usd
 from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
 
+from g1_sim.rtx_camera import (
+    apply_semantics,
+    attach_camera_publishers,
+    attach_robot_state_publishers,
+    spawn_camera,
+)
 from g1_sim.rtx_lidar import (
     MID360_POS,
     MID360_QUAT_WXYZ,
@@ -149,6 +162,15 @@ def main() -> None:
         rendering_dt=1.0 / SIM_RATE_HZ,
     )
 
+    # Register the articulation with physics. Without this the joints never
+    # move, so TF and joint states report a frozen pose even when the graphs
+    # are wired correctly. The root carries ArticulationRootAPI on the pelvis.
+    from isaacsim.core.prims import Articulation
+
+    robot_articulation = Articulation(f"{ROBOT_PRIM}/pelvis", name="g1")
+    sim.reset()
+    print(f"[RTX] articulation   : {robot_articulation.num_dof} DOF")
+
     # The sensor mounts under torso_link, so it inherits the torso's motion.
     mount = f"{ROBOT_PRIM}/torso_link"
     if not omni.usd.get_context().get_stage().GetPrimAtPath(mount).IsValid():
@@ -168,18 +190,47 @@ def main() -> None:
     print(f"[RTX] mount height   : {mount_height:.2f} m")
     print(f"[RTX] blind radius   : {blind_radius(mount_height):.2f} m (no nadir ray)")
 
+    publisher = None
     if ENABLE_ROS2:
+        # The OmniGraph helper is always built so the graph is visible in the
+        # GUI, but by default the points are published by rclpy reading the
+        # sensor annotator - the helper advertises without emitting.
         graph = attach_ros2_publishers(
             prim_paths,
             sim_rate_hz=SIM_RATE_HZ,
             combine=not args_cli.separate_topics,
         )
-        print(f"[RTX] ROS2 graph     : {graph}")
-        print(f"[RTX] publishing     : /livox/mid360/points @ {SIM_RATE_HZ / 6:.0f} Hz")
+        print(f"[RTX] lidar graph    : {graph}")
+
+        # TF, joint states and /clock - what RViz needs to draw the robot.
+        state_graph = attach_robot_state_publishers(ROBOT_PRIM)
+        print(f"[RTX] state graph    : {state_graph}  (/tf, /g1/joint_states, /clock)")
+
+        if not args_cli.no_camera:
+            camera_prim = spawn_camera(f"{ROBOT_PRIM}/torso_link")
+            cam_graph = attach_camera_publishers(camera_prim)
+            print(f"[RTX] camera graph   : {cam_graph}")
+            print("[RTX] camera topics  : /g1/camera/{rgb,depth,semantic,camera_info}")
+
+            # Semantic segmentation only reports labelled prims, so the
+            # targets need classes or the image is entirely background.
+            labels = {f"/World/targets/pedestrian_{i}": "pedestrian" for i in range(len(PEDESTRIANS))}
+            labels["/World/ground"] = "ground"
+            labels[ROBOT_PRIM] = "robot"
+            print(f"[RTX] semantics      : {apply_semantics(labels)} prims labelled")
+
+        if not args_cli.use_og_helper:
+            import rclpy
+
+            from g1_sim.rtx_publisher import RtxLidarPublisher
+
+            rclpy.init()
+            publisher = RtxLidarPublisher(prim_paths, publish_rate=10.0)
+            print("[RTX] publisher      : rclpy (annotator)")
+        else:
+            print("[RTX] publisher      : OmniGraph helper")
     else:
         print("[RTX] ROS2 disabled")
-
-    sim.reset()
 
     # OnPlaybackTick - which drives the ROS2 helpers - only fires while the
     # timeline is playing. Stepping physics alone leaves the graph dormant and
@@ -190,17 +241,32 @@ def main() -> None:
     print("[RTX] running\n")
 
     step = 0
+    scans = 0
+    last_points = 0
     try:
         while simulation_app.is_running():
             sim.step(render=True)
             step += 1
 
+            if publisher is not None:
+                sent = publisher.publish(step / SIM_RATE_HZ)
+                if sent:
+                    scans += 1
+                    last_points = sent
+                publisher.spin_once()
+
             if step % 100 == 0:
-                print(f"[RTX] step {step:>6}")
+                print(f"[RTX] step {step:>6}  scans {scans}  points {last_points}")
             if args_cli.steps and step >= args_cli.steps:
                 break
     except KeyboardInterrupt:
         print("\n[RTX] interrupted")
+    finally:
+        if publisher is not None:
+            import rclpy
+
+            publisher.destroy()
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
