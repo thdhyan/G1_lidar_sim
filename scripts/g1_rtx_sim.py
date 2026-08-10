@@ -35,6 +35,11 @@ parser.add_argument("--steps", type=int, default=0, help="Stop after N steps; 0 
 parser.add_argument("--no-ros2", action="store_true")
 parser.add_argument("--no-camera", action="store_true", help="Skip the camera (saves render time).")
 parser.add_argument(
+    "--no-locomotion",
+    action="store_true",
+    help="Skip the decoupled_wbc cmd_vel bridge; robot just holds the USD's baked-in pose.",
+)
+parser.add_argument(
     "--config-dir",
     type=str,
     default="assets/lidar_configs_fast",
@@ -75,6 +80,7 @@ simulation_app = SimulationApp(
 """Rest everything follows."""
 
 import carb
+import numpy as np
 import omni.kit.app
 import omni.timeline
 import omni.usd
@@ -83,6 +89,7 @@ from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
 from g1_sim.rtx_camera import (
     apply_semantics,
     attach_camera_publishers,
+    attach_cmd_vel_subscriber,
     attach_robot_state_publishers,
     spawn_camera,
 )
@@ -95,6 +102,8 @@ from g1_sim.rtx_lidar import (
 )
 
 ENABLE_ROS2 = not args_cli.no_ros2
+ENABLE_LOCOMOTION = not args_cli.no_locomotion
+WBC_CONTROL_HZ = 50.0  # decoupled_wbc's trained control rate (sim runs faster; see findings doc)
 
 G1_USD = REPO / "assets/g1_29dof_sensors.usd"
 ROBOT_PRIM = "/World/G1"
@@ -210,6 +219,42 @@ def main() -> None:
     sim.reset()
     print(f"[RTX] articulation   : {robot_articulation.num_dof} DOF")
 
+    wbc_bridge = None
+    if ENABLE_LOCOMOTION:
+        from g1_sim.wbc_bridge import (
+            ARM_JOINTS,
+            ARM_KD,
+            ARM_KP,
+            ALL_JOINTS,
+            KD,
+            KP,
+            LEG_WAIST_JOINTS,
+            WbcBridge,
+            quat_rotate_inverse,
+        )
+
+        dof_names = set(robot_articulation.dof_names or [])
+        missing = [j for j in ALL_JOINTS if j not in dof_names]
+        if missing:
+            print(f"[RTX] WBC bridge     : DISABLED - USD is missing joints {missing}")
+        else:
+            wbc_bridge = WbcBridge(
+                REPO / "assets/policy/GR00T-WholeBodyControl-Balance.onnx",
+                REPO / "assets/policy/GR00T-WholeBodyControl-Walk.onnx",
+            )
+            # The USD's baked-in drive gains (uniform 100/10 from
+            # convert_g1_urdf_to_usd.py) don't match what the policy was
+            # trained with - overwrite them per-joint before the first step.
+            robot_articulation.set_gains(
+                kps=KP[None, :], kds=KD[None, :], joint_names=LEG_WAIST_JOINTS
+            )
+            robot_articulation.set_gains(
+                kps=np.full((1, len(ARM_JOINTS)), ARM_KP, dtype=np.float32),
+                kds=np.full((1, len(ARM_JOINTS)), ARM_KD, dtype=np.float32),
+                joint_names=ARM_JOINTS,
+            )
+            print("[RTX] WBC bridge     : loaded (decoupled_wbc Balance/Walk policies, gains overridden)")
+
     # The sensor mounts under torso_link, so it inherits the torso's motion.
     mount = f"{ROBOT_PRIM}/torso_link"
     if not omni.usd.get_context().get_stage().GetPrimAtPath(mount).IsValid():
@@ -233,6 +278,7 @@ def main() -> None:
     print(f"[RTX] blind radius   : {blind_radius(mount_height):.2f} m (no nadir ray)")
 
     publisher = None
+    cmd_vel_graph_path = None
     if ENABLE_ROS2:
         # The OmniGraph helper is always built so the graph is visible in the
         # GUI, but by default the points are published by rclpy reading the
@@ -247,6 +293,10 @@ def main() -> None:
         # TF, joint states and /clock - what RViz needs to draw the robot.
         state_graph = attach_robot_state_publishers(ROBOT_PRIM)
         print(f"[RTX] state graph    : {state_graph}  (/tf, /g1/joint_states, /clock)")
+
+        if wbc_bridge is not None:
+            cmd_vel_graph_path = attach_cmd_vel_subscriber()
+            print(f"[RTX] cmd_vel graph  : {cmd_vel_graph_path}  (/g1/cmd_vel)")
 
         if not args_cli.no_camera:
             camera_prim = spawn_camera(f"{ROBOT_PRIM}/torso_link")
@@ -286,10 +336,46 @@ def main() -> None:
     step = 0
     scans = 0
     last_points = 0
+    wbc_updates = 0
+    wbc_control_period = 1.0 / WBC_CONTROL_HZ
+    wbc_next_time = 0.0
     try:
         while simulation_app.is_running():
             sim.step(render=True)
             step += 1
+
+            if wbc_bridge is not None and sim.current_time >= wbc_next_time:
+                wbc_next_time = sim.current_time + wbc_control_period
+
+                cmd_vx, cmd_vy, cmd_wz = 0.0, 0.0, 0.0
+                if cmd_vel_graph_path is not None:
+                    from g1_sim.action_graph import read_cmd_vel
+
+                    cmd_vx, cmd_vy, cmd_wz = read_cmd_vel(graph_path=cmd_vel_graph_path)
+
+                qpos_all = np.asarray(robot_articulation.get_joint_positions(joint_names=ALL_JOINTS))[0]
+                qvel_all = np.asarray(robot_articulation.get_joint_velocities(joint_names=ALL_JOINTS))[0]
+                _, quat_wxyz = robot_articulation.get_world_poses()
+                quat_wxyz = np.asarray(quat_wxyz)[0]
+                ang_vel_world = np.asarray(robot_articulation.get_angular_velocities())[0]
+                ang_vel_body = quat_rotate_inverse(quat_wxyz, ang_vel_world)
+
+                target = wbc_bridge.step(qpos_all, qvel_all, quat_wxyz, ang_vel_body, cmd_vx, cmd_vy, cmd_wz)
+                robot_articulation.set_joint_position_targets(
+                    target[None, :].astype(np.float32), joint_names=LEG_WAIST_JOINTS
+                )
+                if wbc_updates == 0:
+                    # Arms aren't policy-controlled; hold them at the URDF
+                    # zero pose, same as run_mujoco_gear_wbc.py's fixed PD.
+                    robot_articulation.set_joint_position_targets(
+                        np.zeros((1, len(ARM_JOINTS)), dtype=np.float32), joint_names=ARM_JOINTS
+                    )
+                wbc_updates += 1
+                if wbc_updates % 50 == 0:
+                    print(
+                        f"[RTX] wbc cmd=({cmd_vx:.2f},{cmd_vy:.2f},{cmd_wz:.2f})  "
+                        f"updates={wbc_updates}  pelvis_z={robot_articulation.get_world_poses()[0][0][2]:.3f}"
+                    )
 
             if publisher is not None:
                 # Every step contributes its slice of the sweep; publish() then

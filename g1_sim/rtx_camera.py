@@ -6,11 +6,12 @@ Publishes what RViz needs to draw the robot and its sensors:
 Topic                            Type                           Source
 ===============================  =============================  ==============
 ``/g1/camera/rgb``               ``sensor_msgs/Image``          D435 camera
-``/g1/camera/depth``             ``sensor_msgs/Image``          D435 camera
-``/g1/camera/semantic``          ``sensor_msgs/Image``          D435 camera
+``/g1/camera/depth``              ``sensor_msgs/Image``          D435 camera
+``/g1/camera/semantic``           ``sensor_msgs/Image``          D435 camera
 ``/g1/camera/camera_info``       ``sensor_msgs/CameraInfo``     D435 camera
 ``/tf``                          ``tf2_msgs/TFMessage``         articulation
 ``/g1/joint_states``             ``sensor_msgs/JointState``     articulation
+``/g1/imu``                      ``sensor_msgs/Imu``            IsaacImuSensor
 ``/clock``                       ``rosgraph_msgs/Clock``        simulation
 ===============================  =============================  ==============
 
@@ -31,8 +32,14 @@ TOPIC_SEMANTIC = "/g1/camera/semantic"
 TOPIC_CAMERA_INFO = "/g1/camera/camera_info"
 TOPIC_JOINT_STATES = "/g1/joint_states"
 TOPIC_CLOCK = "/clock"
+TOPIC_CMD_VEL = "/g1/cmd_vel"
+TOPIC_IMU = "/g1/imu"
 
 CAMERA_FRAME = "d435_link"
+# imu_in_torso is a bare Xform in the URDF/USD (a TF frame only, per the
+# "IMU" comment in g1_29dof.urdf) - it carries no IsaacSensor schema until
+# spawn_imu_sensor() creates one under it.
+IMU_FRAME = "imu_in_torso"
 
 
 def spawn_camera(
@@ -157,6 +164,121 @@ def attach_camera_publishers(
             (f"{node}.inputs:topicName", topic),
             (f"{node}.inputs:frameId", frame_id),
         ]
+
+    og.Controller.edit(
+        {"graph_path": graph_path, "evaluator_name": "execution"},
+        {
+            og.Controller.Keys.CREATE_NODES: nodes,
+            og.Controller.Keys.CONNECT: connections,
+            og.Controller.Keys.SET_VALUES: values,
+        },
+    )
+
+    return graph_path
+
+
+def attach_cmd_vel_subscriber(graph_path: str = "/ActionGraph/CmdVelROS2") -> str:
+    """Subscribe to ``/g1/cmd_vel``.
+
+    Only receives the Twist - turning it into joint targets is
+    ``g1_sim.wbc_bridge``'s job, so the main loop reads this node's output via
+    ``g1_sim.action_graph.read_cmd_vel(graph_path=...)`` rather than wiring it
+    to anything here.
+    """
+    import omni.graph.core as og
+
+    nodes = [
+        ("OnTick", "omni.graph.action.OnPlaybackTick"),
+        ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+        ("SubscribeTwist", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
+    ]
+    connections = [
+        ("OnTick.outputs:tick", "SubscribeTwist.inputs:execIn"),
+        ("Context.outputs:context", "SubscribeTwist.inputs:context"),
+    ]
+    values = [
+        ("SubscribeTwist.inputs:topicName", TOPIC_CMD_VEL),
+    ]
+
+    og.Controller.edit(
+        {"graph_path": graph_path, "evaluator_name": "execution"},
+        {
+            og.Controller.Keys.CREATE_NODES: nodes,
+            og.Controller.Keys.CONNECT: connections,
+            og.Controller.Keys.SET_VALUES: values,
+        },
+    )
+
+    return graph_path
+
+
+def spawn_imu_sensor(parent_prim_path: str, name: str = "imu_sensor") -> str:
+    """Create an IMU sensor prim under ``parent_prim_path`` (the
+    ``imu_in_torso`` Xform, per the URDF).
+
+    Before this, ``imu_in_torso``/``imu_in_pelvis`` were plain Xforms with no
+    ``IsaacImuSensor`` schema - real TF frames, but nothing
+    ``IsaacReadIMU`` could read data from.
+
+    Uses ``isaacsim.sensors.experimental.physics``'s ``IMU.create()`` (pure
+    Python prim authoring), **not** the older ``IsaacSensorCreateImuSensor``
+    Kit command - that command lives in the deprecated
+    ``isaacsim.sensors.physics`` extension, and enabling it alongside
+    ``isaacsim.sensors.rtx``/``isaacsim.ros2.bridge`` (which pull in
+    ``isaacsim.sensors.experimental.physics`` as a real dependency, per its
+    own extension.toml) makes Kit register the command name twice - it then
+    fails every call with "wasn't registered or ambigious" and, once
+    poisoned, does not recover even if the deprecated extension is disabled
+    again afterward. Sidestepping the Kit-command layer entirely avoids the
+    conflict; ``isaacsim.sensors.physics.nodes``' ``IsaacReadIMU`` OG node
+    (used by :func:`attach_imu_publisher`) reads whatever backend is present
+    without needing the deprecated extension at all.
+
+    Returns the created sensor's prim path.
+    """
+    from isaacsim.sensors.experimental.physics import IMU
+
+    path = f"{parent_prim_path}/{name}"
+    IMU.create(path, translations=[[0.0, 0.0, 0.0]], orientations=[[1.0, 0.0, 0.0, 0.0]])
+    return path
+
+
+def attach_imu_publisher(
+    imu_prim_path: str,
+    graph_path: str = "/ActionGraph/ImuROS2",
+    topic: str = TOPIC_IMU,
+    frame_id: str = IMU_FRAME,
+) -> str:
+    """Publish ``sensor_msgs/Imu`` from the IMU sensor prim.
+
+    ``IsaacReadIMU`` reads the sensor prim (orientation/linAcc/angVel);
+    ``ROS2PublishImu`` takes those as direct value inputs rather than a
+    prim reference, so the two are wired output-to-input rather than both
+    pointed at the same target the way the camera/TF helpers are.
+    """
+    import omni.graph.core as og
+
+    nodes = [
+        ("OnTick", "omni.graph.action.OnPlaybackTick"),
+        ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+        ("SimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
+        ("ReadImu", "isaacsim.sensors.physics.IsaacReadIMU"),
+        ("PublishImu", "isaacsim.ros2.bridge.ROS2PublishImu"),
+    ]
+    connections = [
+        ("OnTick.outputs:tick", "ReadImu.inputs:execIn"),
+        ("ReadImu.outputs:execOut", "PublishImu.inputs:execIn"),
+        ("Context.outputs:context", "PublishImu.inputs:context"),
+        ("SimTime.outputs:simulationTime", "PublishImu.inputs:timeStamp"),
+        ("ReadImu.outputs:orientation", "PublishImu.inputs:orientation"),
+        ("ReadImu.outputs:linAcc", "PublishImu.inputs:linearAcceleration"),
+        ("ReadImu.outputs:angVel", "PublishImu.inputs:angularVelocity"),
+    ]
+    values = [
+        ("ReadImu.inputs:imuPrim", [imu_prim_path]),
+        ("PublishImu.inputs:topicName", topic),
+        ("PublishImu.inputs:frameId", frame_id),
+    ]
 
     og.Controller.edit(
         {"graph_path": graph_path, "evaluator_name": "execution"},

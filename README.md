@@ -185,6 +185,86 @@ cloud in RViz is the acceptance test for getting this right.
 
 ---
 
+## RTX LiDAR pivot (Isaac Sim 6.0)
+
+Everything above this line is the original warp-ray-caster design on Isaac
+Sim 5.1 (`env_isaaclab` conda env). The project has since pivoted to **RTX
+LiDAR with emitter-state arrays** on **Isaac Sim 6.0.1** (`isaac` conda env,
+Python 3.12, pip-installed — no standalone app bundle on this machine). Full
+rationale in `Plan.md`, status board in `Tasks.md`. Quick facts as of the
+first live run (2026-08-10):
+
+- Real ROS2 pipeline confirmed live (`/clock`, `/tf`, `/g1/joint_states`,
+  `/livox/mid360/points` at ~11 Hz).
+- Point cloud is currently clipped to azimuth ±90° (not a full 360° ring) —
+  traced to the `IsaacCreateRTXLidarScanBuffer` annotator being deprecated in
+  this Isaac Sim build; fix is to port to `GenericModelOutput`. See
+  `Tasks.md` → "Live verification — 2026-08-10" for the full trace.
+- Run it: `conda activate isaac && python scripts/g1_rtx_sim.py --headless`.
+- **Locomotion works now** (2026-08-10): `/g1/cmd_vel` drives the robot via
+  NVIDIA's `decoupled_wbc` Balance/Walk ONNX policies — live-verified
+  standing and walking. `--no-locomotion` to disable. See `Tasks.md` Task 5
+  and `docs/decoupled_wbc_findings.md`.
+
+## SLAM
+
+`sjtuyinjie/Ultra-Fusion` (LiDAR+camera+IMU) runs on this machine via Docker
+(no public source yet, but the prebuilt image works despite targeting a
+different ROS distro than our host — see `docs/ultra_fusion_findings.md`).
+Not wired to our sensors yet — needs a custom config profile with real G1
+Mid-360/D435 extrinsics we haven't calibrated. See `Tasks.md` → "SLAM
+investigation — Ultra-Fusion".
+
+## Tooling
+
+- **Isaac Sim skill** (`~/.claude/skills/isaac-sim`), installed via
+  `npx skillfish add a5c-ai/babysitter isaac-sim`.
+- **Point cloud visualization skill** (`~/.claude/skills/pointcloud-viz`):
+  renders any `.pcd`/`.ply`/`.csv`/`.npy` cloud to a PNG (Open3D, falls back
+  to matplotlib), with optional detection-box overlay. `python
+  ~/.claude/skills/pointcloud-viz/visualize.py <input> -o <out.png>`.
+- **Isaac Sim MCP server** (`whats2000/isaacsim-mcp-server`,
+  `feat/isaac-sim-6.0.0-support`), cloned to
+  `~/Projects/thesis/mcp-servers/isaacsim-mcp-server` and registered with
+  Claude Code (`isaac-sim`, user scope). Bridges to a running Isaac Sim's
+  `isaac.sim.mcp_extension` extension over a TCP socket (`localhost:8766`).
+  **Auto-starts now** — no `--ext-folder`/`--enable` flags needed. Configured
+  via each Kit app's persistent settings
+  (`.../isaacsim/kit/data/Kit/Isaac-Sim Python/{5.1,6.0}/user.config.json`,
+  keys `persistent.app.exts.userFolders` /  `.enabled`), so it comes up with
+  *any* launch of Isaac Sim in either the `isaac` (6.0) or `env_isaaclab`
+  (5.1) conda env, including this project's own scripts. Verified live
+  2026-08-10: `isaac.sim.mcp_extension-0.6.0` auto-started at ~8s into boot,
+  port 8766 listening, zero extra flags. (A stale reference to an old
+  `~/Projects/isaacsim-mcp-server` checkout in a third, unrelated
+  `Isaac-Sim/5.1` app config was also found and fixed to point here.)
+- **RViz fix (2026-08-10)**: `rviz/g1.rviz`'s `Fixed Frame` was `odom`, which
+  doesn't exist anywhere in the actual published TF tree (root is `World` —
+  checked live via `ros2 topic echo /tf`). RViz silently renders nothing when
+  the fixed frame is missing, which read as "no data" even though the sensor
+  pipeline was fine. Fixed to `World`; also bumped `Decay Time` 0→3s since
+  the Mid-360's non-repetitive scan means a single frame is a thin slice, not
+  a ring — needs a few seconds of accumulation to look like anything.
+  Separately, if RViz crashes with a `libpthread.so.0` / `GLIBC_PRIVATE`
+  symbol error when launched from a terminal inside this VSCode session, it's
+  VSCode's snap confinement leaking `GTK_PATH`/`GIO_MODULE_DIR`/`LOCPATH`
+  (pointing into `/snap/core20`) into the shell — unset those before
+  launching `rviz2`, don't touch `LD_LIBRARY_PATH` (ROS needs it as-is for
+  `libOgreMain`).
+
+## OpenPCDet comparison
+
+`~/Projects/Thesis/OpenPCDet` (note: capital-T `Thesis`, a sibling directory,
+not this repo) has real pretrained checkpoints — `pointpillar_7728.pth`,
+77.28 KITTI AP — that our own from-scratch, weights-free
+`g1_perception_ws` PointPillar doesn't have. Confirmed working end-to-end via
+a live forward pass in the `livox` conda env (`pcdet` 0.6.0 already built
+there). Different backbone shape means the checkpoint can't load directly
+into our model class as-is; two integration paths are scoped in `Tasks.md` —
+not yet implemented.
+
+---
+
 ## Layout
 
 ```

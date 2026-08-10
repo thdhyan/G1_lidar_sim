@@ -16,7 +16,7 @@ Visualization Manager:
   Name: root
   Global Options:
     Background Color: 40; 42; 48
-    Fixed Frame: odom
+    Fixed Frame: World
     Frame Rate: 30
   Displays:
     - Class: rviz_default_plugins/Grid
@@ -60,7 +60,9 @@ Visualization Manager:
       Color Transformer: AxisColor
       Axis: Z
       Autocompute Intensity Bounds: true
-      Decay Time: 0
+      # Non-repetitive Mid-360 scan: a single frame is a thin slice, not a
+      # full ring. Accumulate a few seconds so coverage is visible at all.
+      Decay Time: 3
 
     - Class: rviz_default_plugins/MarkerArray
       Name: Detections

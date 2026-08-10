@@ -160,3 +160,91 @@ failure that was a bug in the diagnostic rather than the sensor.
 
 `GroundPlaneCfg` was also swapped for an explicit cuboid, which yields a plain
 `Cube` prim the mesh extraction handles directly.
+
+## RTX LiDAR — annotator deprecation found live, 2026-08-10
+
+First live run of the RTX pivot (see `Tasks.md` / `Verify_RTX.md` for the
+full trace). The ROS2 pipeline genuinely works end to end — `/clock`, `/tf`,
+`/g1/joint_states`, `/livox/mid360/points` all confirmed live via
+`ros2 topic hz`/`echo` against a real running sim, not just code review. But
+the published cloud is clipped to azimuth ±90°, not the full 360° ring.
+
+This looked at first like the exact bug commit `7aa61bf` already fixed
+(`validStartAzimuthDeg=0/360` vs `-180/180`). It isn't a recurrence of that
+bug: the JSON configs' baked-in `azimuthDeg` values were checked directly
+and are uniformly distributed across the full range. The clip reproduces
+identically with 2 prims and with all 4, ruling out `--num-prims` as the
+cause too. The actual cause is a level down: `g1_sim/rtx_publisher.py` reads
+points via the `IsaacCreateRTXLidarScanBuffer` annotator, which this Isaac
+Sim 6.0.1 build now flags as deprecated, with NVIDIA's own log message
+pointing at `GenericModelOutput` instead for full-scan data. The old
+annotator apparently still runs but silently returns a partial (frustum-
+limited) scan rather than erroring — which is why nothing upstream caught
+it. Whatever Isaac Sim build `7aa61bf` was verified against, this is a
+regression relative to it, introduced by the annotator's deprecation, not a
+leftover of the original config bug.
+
+**Consequence for anyone re-testing this**: a single captured message from
+this sensor is not representative of full coverage even once the annotator
+fix lands, because the Mid-360's `solidState` scan is genuinely
+non-repetitive — each `emitterState` (each published frame) only covers a
+thin azimuth slice by design, and the full pattern only builds up after
+accumulating many frames (the `stateResolutionStep=1`-per-tick cycle). Judge
+coverage from an accumulated multi-second capture or RViz's own decay-time
+accumulation, not a single `--once` echo.
+
+**Separately found**: the three `PEDESTRIANS` targets in `g1_rtx_sim.py`
+(3-6 m out) sit entirely inside the sensor's blind radius at this run's
+measured 1.21 m mount height (9.6 m blind radius — note this is a different
+mount height than the 0.40618 m documented after `7aa61bf`; something moved
+it since). Detection will read zero regardless of model correctness until
+either the targets move past ~10 m or the mount comes down.
+
+## OpenPCDet comparison — 2026-08-10
+
+Two reference repos live under `~/Projects/Thesis/` (sibling of this repo's
+parent, capital-T — not the same directory as `~/Projects/thesis/G1_sim`):
+`OpenPCDet` (full checkout, with real pretrained `checkpoints/pointpillar_7728.pth`
+and `pv_rcnn_8369.pth`) and `livox_detection` (confirmed to be the exact
+upstream this project's CenterPoint port was reverse-engineered from —
+filenames and checkpoints match).
+
+`pcdet` is already built in the `livox` conda env and was smoke-tested: real
+forward pass through `pointpillar_7728.pth`, works end to end today. Our own
+`g1_perception_ws` PointPillar (`pointpillar_model.py`) has no pretrained
+weights and a different backbone shape (`BaseBEVBackbone`'s 3-block design
+vs. our custom symmetric 4-block one), so the checkpoint can't be loaded
+directly into it. Full comparison table and the two integration options
+(wrap real OpenPCDet as a new backend vs. reshape our model to match) are in
+`Tasks.md` — recommendation there is to wrap OpenPCDet directly rather than
+reshape, since the smoke test already answers "does this component work,"
+leaving only "is a KITTI-forward-range model useful on a 360° pedestrian
+scene" as the open question.
+
+## cmd_vel locomotion — decoupled_wbc — 2026-08-10
+
+Task 5's locomotion gap is closed. After three false starts (a stationary-arm
+manipulation policy mistaken for a walking one, IsaacLab's untrained/wrong-DOF
+config, and NVIDIA GEAR-SONIC's TensorRT-C++-and-mocap-reference design being
+more than the task needed), NVIDIA's `decoupled_wbc` module — plain Python,
+ONNX+numpy, driven by planar velocity commands — turned out to fit directly.
+Full technical trace (I/O contract, PD-gain bug, live results) lives in
+`Tasks.md` under Task 5 and in `docs/decoupled_wbc_findings.md`; the one
+finding worth repeating here because it generalizes beyond this policy:
+**`convert_g1_urdf_to_usd.py` bakes uniform PD gains (100/10) into every
+joint**, and any externally trained controller that assumes real per-joint
+gains will silently fail (the robot collapses) against that default until the
+caller overrides them explicitly. This will bite the next external policy
+too, not just this one.
+
+## SLAM — Ultra-Fusion — 2026-08-10
+
+Investigated per user request as a LiDAR+camera+IMU SLAM option matching our
+exact Mid-360+D435 pair. No public source is available yet, but the prebuilt
+Docker images run correctly on this machine despite targeting a different
+ROS distro (Humble/22.04) than our host (Jazzy/24.04) — Docker's own
+userspace isolation makes that a non-issue. What's missing is a sensor
+profile: none of Ultra-Fusion's shipped configs assume a legged, wheel-less
+robot, so ours would need to be authored from scratch with real extrinsics/
+intrinsics we don't have calibrated yet. Full trace and alternatives (FAST-
+LIO2, FAST-LIVO2, etc.) in `Tasks.md` and `docs/ultra_fusion_findings.md`.
