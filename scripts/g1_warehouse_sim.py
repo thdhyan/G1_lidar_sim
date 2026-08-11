@@ -305,6 +305,27 @@ def main() -> None:
         state_graph = attach_robot_state_publishers(ROBOT_PRIM)
         print(f"[WH] state graph     : {state_graph}  (/tf, /g1/joint_states, /clock)")
 
+        if ira_ok:
+            import g1_sim.ira_actors as ira_actors
+
+            # Re-enabled 2026-08-10: briefly disabled on the theory that this
+            # graph's "[PoseTree] eInvalid" spam was uniquely responsible for
+            # a stalled boot, but the same spam (just "parent .../World"
+            # eInvalid, no human targets) kept firing with this disabled -
+            # so it isn't the (sole) cause and disabling it bought nothing.
+            # The eInvalid warning itself is still unexplained/unfixed - see
+            # FUTURE_STEPS.md - but it doesn't block this from being useful.
+            actor_prims = ira_actors.discover_actor_prims(stage)
+            actors_graph = ira_actors.attach_actor_tf_publishers(actor_prims)
+            print(f"[WH] actors tf graph : {actors_graph}  ({len(actor_prims)} actors: {actor_prims})")
+
+            carter_prims = ira_actors.discover_prims_at(stage, "/World/Robots/carters")
+            if carter_prims:
+                # Publishes IRA's own existing carter IMU (read-only) -
+                # see find_imu_prim()'s docstring for why we don't create one.
+                carter_imu_graphs = ira_actors.attach_carter_imu_publishers(stage, carter_prims)
+                print(f"[WH] carter imus     : {len(carter_imu_graphs)}/{len(carter_prims)} found -> /carter_N/imu")
+
         imu_prim = spawn_imu_sensor(f"{ROBOT_PRIM}/torso_link/imu_in_torso")
         imu_graph = attach_imu_publisher(imu_prim)
         print(f"[WH] imu graph       : {imu_graph}  (/g1/imu, prim={imu_prim})")
@@ -329,8 +350,9 @@ def main() -> None:
         from g1_sim.rtx_publisher import RtxLidarPublisher
 
         rclpy.init()
-        publisher = RtxLidarPublisher(prim_paths, publish_rate=10.0)
-        print("[WH] publisher       : rclpy (annotator)")
+        lidar_topics = ["/livox/mid360/points", "/g1/lidar/points"]
+        publisher = RtxLidarPublisher(prim_paths, topic=lidar_topics, publish_rate=10.0)
+        print(f"[WH] publisher       : rclpy (annotator) -> {lidar_topics}")
     else:
         print("[WH] ROS2 disabled")
 
@@ -371,8 +393,20 @@ def main() -> None:
                     target[None, :].astype(np.float32), joint_names=LEG_WAIST_JOINTS
                 )
                 if wbc_updates == 0:
+                    # Arms held at the all-zero URDF pose (straight down at
+                    # the sides) sit entirely outside the D435's downward-
+                    # pitched FOV. Raise both shoulder_pitch joints (index 0
+                    # left, 7 right in ARM_JOINTS) forward so the arms enter
+                    # frame, per live testing request 2026-08-10. Sign/
+                    # magnitude picked from the URDF's zero-pose convention
+                    # (positive shoulder_pitch = forward raise for this
+                    # robot family) but not yet re-verified live - adjust if
+                    # the arms raise backward instead.
+                    arm_pose = np.zeros((1, len(ARM_JOINTS)), dtype=np.float32)
+                    arm_pose[0, 0] = 0.6   # left_shoulder_pitch_joint
+                    arm_pose[0, 7] = 0.6   # right_shoulder_pitch_joint
                     robot_articulation.set_joint_position_targets(
-                        np.zeros((1, len(ARM_JOINTS)), dtype=np.float32), joint_names=ARM_JOINTS
+                        arm_pose, joint_names=ARM_JOINTS
                     )
                 wbc_updates += 1
                 if wbc_updates % 50 == 0:

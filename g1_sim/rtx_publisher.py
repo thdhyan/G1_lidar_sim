@@ -2,8 +2,20 @@
 
 ``ROS2RtxLidarHelper`` advertises its topic but never emits on this setup, so
 this reads the same data the helper would - via the
-``IsaacCreateRTXLidarScanBuffer`` annotator, which is verified to return
-~175,000 points per prim per frame - and publishes it with rclpy instead.
+``IsaacExtractRTXSensorPointCloud`` annotator - and publishes it with rclpy
+instead.
+
+Was ``IsaacCreateRTXLidarScanBuffer`` until 2026-08-10: that annotator is
+deprecated in this Isaac Sim 6.0.1 build and, per its own deprecation
+warning, only returns azimuth in [-90, 90] deg instead of the full 360 deg
+sweep - confirmed live (RViz showed a narrow arc, not a ring). NVIDIA's
+warning points at the ``GenericModelOutput`` annotator as the replacement;
+``IsaacExtractRTXSensorPointCloud`` is the Cartesian-conversion annotator
+built on top of it (see
+``isaacsim.sensors.rtx.nodes.../tests/test_point_cloud_annotator.py`` for
+the reference usage this was ported from). Not yet re-verified live after
+this swap - if the ``"data"``/``"intensity"`` dict keys turn out to differ
+from the old annotator's, ``_gather()`` logs the actual keys once.
 
 The several co-located sensor prims that make up one Mid-360 are merged into a
 single cloud, so subscribers see one sensor.
@@ -33,7 +45,7 @@ class RtxLidarPublisher:
     def __init__(
         self,
         prim_paths: list[str],
-        topic: str = "/livox/mid360/points",
+        topic: str | list[str] = "/livox/mid360/points",
         frame_id: str = "mid360_link",
         publish_rate: float = 10.0,
         max_points: int = 20000,
@@ -56,9 +68,10 @@ class RtxLidarPublisher:
         self.annotators = []
         for i, prim_path in enumerate(prim_paths):
             rp = rep.create.render_product(prim_path, [1, 1], name=f"mid360_pub_{i}")
-            annot = rep.AnnotatorRegistry.get_annotator("IsaacCreateRTXLidarScanBuffer")
+            annot = rep.AnnotatorRegistry.get_annotator("IsaacExtractRTXSensorPointCloud")
             annot.attach([rp])
             self.annotators.append(annot)
+        self._logged_keys = False
 
         self.node = Node("g1_rtx_lidar_publisher")
         # Best-effort matches how sensor streams are normally consumed: a
@@ -68,7 +81,8 @@ class RtxLidarPublisher:
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self.publisher = self.node.create_publisher(PointCloud2, topic, qos)
+        topics = [topic] if isinstance(topic, str) else list(topic)
+        self.publishers = [self.node.create_publisher(PointCloud2, t, qos) for t in topics]
 
         self._fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
@@ -78,7 +92,7 @@ class RtxLidarPublisher:
         ]
 
         self.node.get_logger().info(
-            f"publishing {topic} in frame {frame_id} from {len(prim_paths)} prims"
+            f"publishing {topics} in frame {frame_id} from {len(prim_paths)} prims"
         )
 
     def accumulate(self) -> int:
@@ -115,7 +129,9 @@ class RtxLidarPublisher:
             idx = np.linspace(0, len(points) - 1, self.max_points).astype(np.int64)
             points, intensities = points[idx], intensities[idx]
 
-        self.publisher.publish(self._to_message(points, intensities, sim_time))
+        msg = self._to_message(points, intensities, sim_time)
+        for pub in self.publishers:
+            pub.publish(msg)
         return len(points)
 
     def _gather(self) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -127,6 +143,9 @@ class RtxLidarPublisher:
             data = annot.get_data()
             if not isinstance(data, dict):
                 continue
+            if not self._logged_keys:
+                self.node.get_logger().info(f"annotator keys: {list(data.keys())}")
+                self._logged_keys = True
             xyz = data.get("data")
             if xyz is None or len(xyz) == 0:
                 continue

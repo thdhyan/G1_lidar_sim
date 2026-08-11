@@ -44,16 +44,30 @@ CONFIG_DIR = REPO / "assets/lidar_configs"
 # Matches the real device and the generated configs.
 SCAN_RATE_HZ = 10.0
 
-# Mount on torso_link per Unitree URDF: xyz=(0.0002835, 0.00003, 0.40618),
-# rpy=(0, 0.0401, 0) — a ~2.3° downward pitch, no roll. The sensor is NOT
-# inverted; the earlier (3.14, 0, 0) roll flipped rays into the robot body.
-MID360_POS = (0.0002835, 0.00003, 0.40618)
-# rpy=(0, 0.0401, 0) → wxyz quaternion for ~2.3° pitch about Y-axis.
-_MID360_PITCH = 0.0401  # radians (~2.3 deg)
+# Mount on torso_link per the URDF actually used by
+# convert_g1_urdf_to_usd.py (OmniPerception/LidarSensor/.../g1_29dof.urdf):
+# xyz=(0.0002835, 0.00003, 0.4188), rpy=(3.14, 0, 0) — a 180 deg roll, no
+# pitch. NVIDIA's GR00T-WholeBodyControl repo ships a *different* g1_29dof.urdf
+# with a different mid360_joint (xyz z=0.40618, rpy=(0, 0.0401, 0), no roll) -
+# this file previously copied that one by mistake. Since the USD's torso_link
+# frame comes from the OmniPerception URDF, not GR00T's, the mismatch pointed
+# the sensor's local Z into the ceiling instead of the ground. Getting this
+# wrong inverts the cloud - verify by checking the live cloud in RViz covers
+# the ground/room, not open sky, before touching this again.
+# Briefly lowered 0.2 m (to 0.2188) 2026-08-10 to test whether the real
+# mount's ~9.7 m blind cone explained a narrow-arc-not-ring cloud. Reverted
+# to the real URDF mount height per user request - didn't resolve the arc
+# issue and the sensor's still-unexplained non-publishing that session took
+# priority. If revisiting the blind-cone theory, the math was: blind_radius
+# = 8x mount height, so lowering height shrinks the cone and lets closer
+# geometry register.
+MID360_POS = (0.0002835, 0.00003, 0.4188)
+# rpy=(3.14, 0, 0) -> wxyz quaternion for a 180 deg roll about X-axis.
+_MID360_ROLL = __import__("math").pi
 MID360_QUAT_WXYZ = (
-    __import__("math").cos(_MID360_PITCH / 2),  # w
-    0.0,                                        # x (roll=0)
-    __import__("math").sin(_MID360_PITCH / 2),  # y (pitch)
+    __import__("math").cos(_MID360_ROLL / 2),  # w
+    __import__("math").sin(_MID360_ROLL / 2),  # x (roll)
+    0.0,                                        # y (pitch=0)
     0.0,                                        # z (yaw=0)
 )
 

@@ -199,6 +199,139 @@ async def setup(
     return True
 
 
+def discover_prims_at(stage, scope_path: str) -> list[str]:
+    """Return the direct children of ``scope_path``, or ``[]`` if it doesn't
+    exist (e.g. the carters scope when ``--num-carters 0``)."""
+    prim = stage.GetPrimAtPath(scope_path)
+    if not prim.IsValid():
+        return []
+    return [child.GetPath().pathString for child in prim.GetChildren()]
+
+
+def discover_actor_prims(
+    stage,
+    humans_scope: str = "/World/Characters/humans",
+    carters_scope: str = "/World/Robots/carters",
+) -> list[str]:
+    """Return the root Xform of every spawned human and Nova Carter.
+
+    IRA names actors ``humans_0``, ``humans_1``, ... and (for a single
+    carter) plain ``Nova_Carter`` with no index suffix, so the count-based
+    naming isn't predictable from ``--num-humans``/``--num-carters`` alone -
+    read it back from the stage instead of guessing the pattern.
+    """
+    return discover_prims_at(stage, humans_scope) + discover_prims_at(stage, carters_scope)
+
+
+def find_imu_prim(stage, root_path: str):
+    """Find an existing IMU sensor prim already under ``root_path``.
+
+    Nova Carter comes from IRA with its own IMU already set up (per NVIDIA's
+    Replicator Agent robot-properties docs) - creating a *second* one via
+    ``IMU.create()`` applies a physics schema to the rigid body IRA's own
+    wander controller already holds a tensor view into, which invalidates
+    that view and spams "Simulation view object is invalidated" on every
+    tick thereafter (confirmed live with 4 carters, 2026-08-10). Read the
+    stock sensor instead of authoring a new one.
+    """
+    from pxr import Usd
+
+    root = stage.GetPrimAtPath(root_path)
+    if not root.IsValid():
+        return None
+    for prim in Usd.PrimRange(root):
+        type_name = prim.GetTypeName()
+        if "imu" in type_name.lower() or "imu" in prim.GetName().lower():
+            return prim.GetPath().pathString
+    return None
+
+
+def attach_carter_imu_publishers(
+    stage,
+    carter_prim_paths: list[str],
+) -> list[str]:
+    """Publish each Nova Carter's existing IMU sensor (IRA's own, not one we
+    create) as ``sensor_msgs/Imu`` on ``/carter_N/imu``."""
+    from g1_sim.rtx_camera import attach_imu_publisher
+
+    graph_paths = []
+    for i, carter_path in enumerate(carter_prim_paths):
+        imu_prim = find_imu_prim(stage, carter_path)
+        if imu_prim is None:
+            print(f"[ira_actors] carter {i} IMU  : not found under {carter_path}, skipping")
+            continue
+        topic = f"/carter_{i}/imu"
+        graph_path = attach_imu_publisher(
+            imu_prim,
+            graph_path=f"/ActionGraph/CarterImuROS2_{i}",
+            topic=topic,
+            frame_id=f"carter_{i}_imu",
+        )
+        graph_paths.append(graph_path)
+        print(f"[ira_actors] carter {i} IMU  : {topic}  prim={imu_prim}")
+    return graph_paths
+
+
+def attach_actor_tf_publishers(
+    actor_prim_paths: list[str],
+    graph_path: str = "/ActionGraph/ActorsTF",
+    topic_name: str = "/tf",
+) -> str | None:
+    """Publish one TF frame per human/Nova Carter (root pose only).
+
+    Deliberately targets each actor's top-level Xform, not any nested
+    SkelRoot/articulation - ``ROS2PublishTransformTree`` only walks into an
+    articulation tree when the *target* prim itself is an articulation root,
+    so pointing it at the plain wrapper Xform gives exactly one frame per
+    actor instead of exploding into every skeleton bone or wheel joint.
+    """
+    if not actor_prim_paths:
+        return None
+
+    import omni.graph.core as og
+
+    nodes = [
+        ("OnTick", "omni.graph.action.OnPlaybackTick"),
+        ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+        ("SimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
+        ("PublishActorsTF", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
+    ]
+    connections = [
+        ("OnTick.outputs:tick", "PublishActorsTF.inputs:execIn"),
+        ("Context.outputs:context", "PublishActorsTF.inputs:context"),
+        ("SimTime.outputs:simulationTime", "PublishActorsTF.inputs:timeStamp"),
+    ]
+    values = [
+        ("PublishActorsTF.inputs:topicName", topic_name),
+        # targetPrims is a "target" (relationship) input, not a plain data
+        # attribute - it has to go through SET_VALUES in this same edit()
+        # call. A separate og.Controller.set() after the fact (the first
+        # attempt) silently no-ops on relationship inputs, leaving
+        # targetPrims unset - which is what caused the "[PoseTree] target
+        # getObjectType eInvalid" spam (confirmed live, 2026-08-10): the node
+        # was running with no targets at all. Matches how
+        # attach_robot_state_publishers() below sets targetPrims/parentPrim.
+        ("PublishActorsTF.inputs:targetPrims", actor_prim_paths),
+        # Leaving parentPrim blank ("use World" per the node's own docs) was
+        # the first attempt and produced a second, parallel spam: "[PoseTree]
+        # parent getObjectType eInvalid for '/World'" on every tick, even
+        # after targetPrims was fixed (confirmed live, 2026-08-10) - the
+        # blank-default path doesn't actually resolve cleanly in practice.
+        # Setting it explicitly is what already works for the G1 publisher.
+        ("PublishActorsTF.inputs:parentPrim", ["/World"]),
+    ]
+
+    og.Controller.edit(
+        {"graph_path": graph_path, "evaluator_name": "execution"},
+        {
+            og.Controller.Keys.CREATE_NODES: nodes,
+            og.Controller.Keys.CONNECT: connections,
+            og.Controller.Keys.SET_VALUES: values,
+        },
+    )
+    return graph_path
+
+
 def run_setup_blocking(
     simulation_app,
     config_path: Path,

@@ -64,6 +64,24 @@ Visualization Manager:
       # full ring. Accumulate a few seconds so coverage is visible at all.
       Decay Time: 3
 
+    - Class: rviz_default_plugins/PointCloud2
+      Name: DepthCloud
+      Enabled: true
+      Topic:
+        Value: /g1/camera/depth/points
+        Depth: 1
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+      Style: Points
+      Size (Pixels): 2
+      Alpha: 1
+      # Flat color, not AxisColor - keeps it visually distinct from the
+      # LiDAR cloud (which is colored by height) so the two don't blend
+      # together when both are on screen at once.
+      Color Transformer: FlatColor
+      Color: 255; 140; 0
+      Decay Time: 0
+
     - Class: rviz_default_plugins/MarkerArray
       Name: Detections
       Enabled: true

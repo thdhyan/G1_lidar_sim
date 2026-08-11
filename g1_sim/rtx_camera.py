@@ -7,6 +7,7 @@ Topic                            Type                           Source
 ===============================  =============================  ==============
 ``/g1/camera/rgb``               ``sensor_msgs/Image``          D435 camera
 ``/g1/camera/depth``              ``sensor_msgs/Image``          D435 camera
+``/g1/camera/depth/points``       ``sensor_msgs/PointCloud2``    D435 camera
 ``/g1/camera/semantic``           ``sensor_msgs/Image``          D435 camera
 ``/g1/camera/camera_info``       ``sensor_msgs/CameraInfo``     D435 camera
 ``/tf``                          ``tf2_msgs/TFMessage``         articulation
@@ -28,6 +29,7 @@ D435_PITCH_RAD = 0.8307767239493009
 
 TOPIC_RGB = "/g1/camera/rgb"
 TOPIC_DEPTH = "/g1/camera/depth"
+TOPIC_DEPTH_POINTS = "/g1/camera/depth/points"
 TOPIC_SEMANTIC = "/g1/camera/semantic"
 TOPIC_CAMERA_INFO = "/g1/camera/camera_info"
 TOPIC_JOINT_STATES = "/g1/joint_states"
@@ -72,11 +74,18 @@ def spawn_camera(
 
     xform = UsdGeom.Xformable(camera)
     xform.AddTranslateOp().Set(Gf.Vec3d(*D435_POS))
-    # USD cameras look down -Z while the URDF frame looks down +X, so the
-    # mount pitch is applied on top of a -90 deg Y rotation.
-    xform.AddRotateXYZOp().Set(
-        Gf.Vec3f(0.0, -90.0 + math.degrees(D435_PITCH_RAD), 0.0)
-    )
+    # Two SEPARATE ops, not one combined RotateXYZOp - xformOpOrder composes
+    # last-listed-applied-first, so listing roll (Z) after tilt (Y) makes it
+    # the innermost op: it rotates the point while still in the camera's raw
+    # local frame (where -Z is the optical axis), before the tilt/reposition
+    # rotation ever touches it. Folding both into one Vec3f(x,y,z) - the
+    # first attempt - made the "Z" term apply about the pre-tilt frame
+    # instead, which reads as a world-plane rotation, not a roll about the
+    # boresight. USD cameras look down -Z while the URDF frame looks down
+    # +X, hence the -90 deg Y tilt; roll is separately 90 deg clockwise per
+    # live visual check. Not yet re-verified after this restructure.
+    xform.AddRotateYOp().Set(-90.0 + math.degrees(D435_PITCH_RAD))
+    xform.AddRotateZOp().Set(90.0)
 
     return path
 
@@ -150,6 +159,10 @@ def attach_camera_publishers(
     for label, data_type, topic in (
         ("RGB", "rgb", TOPIC_RGB),
         ("Depth", "depth", TOPIC_DEPTH),
+        # depth_pcl reuses the same render product to also emit a
+        # sensor_msgs/PointCloud2 straight from the depth buffer - no extra
+        # render pass, just another ROS2CameraHelper reading it differently.
+        ("DepthPoints", "depth_pcl", TOPIC_DEPTH_POINTS),
         ("Semantic", "semantic_segmentation", TOPIC_SEMANTIC),
     ):
         node = f"Camera{label}"
