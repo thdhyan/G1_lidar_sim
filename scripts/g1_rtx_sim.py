@@ -95,7 +95,6 @@ from g1_sim.rtx_camera import (
 )
 from g1_sim.rtx_lidar import (
     MID360_POS,
-    MID360_QUAT_WXYZ,
     attach_ros2_publishers,
     blind_radius,
     spawn_mid360,
@@ -255,16 +254,21 @@ def main() -> None:
             )
             print("[RTX] WBC bridge     : loaded (decoupled_wbc Balance/Walk policies, gains overridden)")
 
-    # The sensor mounts under torso_link, so it inherits the torso's motion.
-    mount = f"{ROBOT_PRIM}/torso_link"
+    # Mount ON the mid360_link prim, which already carries the URDF's
+    # torso->sensor pose. Identity local transform means the returns come out in
+    # the exact frame published as `mid360_link`, so frame_id and point origin
+    # are the same prim (see g1_warehouse_sim.py for the below-ground bug this
+    # fixed). mid360_link is rigidly fixed to torso, so it still inherits the
+    # torso's motion.
+    mount = f"{ROBOT_PRIM}/mid360_link"
     if not omni.usd.get_context().get_stage().GetPrimAtPath(mount).IsValid():
         raise SystemExit(f"[RTX] mount prim {mount} missing from the USD")
 
     prim_paths = spawn_mid360(
         mount,
         config_dir=REPO / args_cli.config_dir,
-        translation=MID360_POS,
-        orientation=MID360_QUAT_WXYZ,
+        translation=(0.0, 0.0, 0.0),
+        orientation=(1.0, 0.0, 0.0, 0.0),
     )
     if args_cli.num_prims and args_cli.num_prims < len(prim_paths):
         prim_paths = prim_paths[: args_cli.num_prims]

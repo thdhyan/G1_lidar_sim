@@ -1,144 +1,689 @@
 Panels:
   - Class: rviz_common/Displays
+    Help Height: 70
     Name: Displays
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /LiDAR1
         - /RobotModel1
+        - /CameraDepthCloud1/Status1
       Splitter Ratio: 0.5
-    Tree Height: 700
+    Tree Height: 263
   - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
     Name: Views
-
+    Splitter Ratio: 0.5
 Visualization Manager:
   Class: ""
-  Name: root
-  Global Options:
-    Background Color: 40; 42; 48
-    # The TF tree is rooted at World, so the robot's pelvis moves relative to
-    # it and you see the fall. Setting this to pelvis instead pins the robot
-    # and the world appears to move around it.
-    Fixed Frame: World
-    Frame Rate: 30
   Displays:
-    - Class: rviz_default_plugins/Grid
-      Name: Grid
-      Enabled: true
+    - Alpha: 0.30000001192092896
       Cell Size: 1
-      Plane Cell Count: 40
+      Class: rviz_default_plugins/Grid
       Color: 100; 100; 100
-      Alpha: 0.3
-
-    # Needs /robot_description, which the simulator does NOT publish - run
-    # robot_state_publisher alongside it (see launch/g1_bringup.launch.py).
-    # Without it you get TF axes but no meshes.
-    - Class: rviz_default_plugins/RobotModel
-      Name: RobotModel
       Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 40
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
       Description Source: Topic
       Description Topic:
-        Value: /robot_description
         Depth: 1
         Durability Policy: Transient Local
-        Reliability Policy: Reliable
-      Alpha: 1
-      Visual Enabled: true
-      Collision Enabled: false
-
-    - Class: rviz_default_plugins/TF
-      Name: TF
-      Enabled: true
-      Show Names: false
-      Show Axes: true
-      Show Arrows: false
-      Marker Scale: 0.25
-      Update Interval: 0
-      # Sim time can jump when the simulator is paused or restarted; a longer
-      # timeout stops frames disappearing when that happens.
-      Frame Timeout: 60
-
-    - Class: rviz_default_plugins/PointCloud2
-      Name: LiDAR
-      Enabled: true
-      Topic:
-        Value: /livox/mid360/points
-        Depth: 5
-        # Must be best-effort: the publisher uses it, and a reliable
-        # subscriber silently receives nothing from a best-effort publisher.
-        Reliability Policy: Best Effort
         History Policy: Keep Last
-      Style: Points
-      Size (Pixels): 2
-      Alpha: 1
-      Color Transformer: AxisColor
-      Axis: Z
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        d435_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        head_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        imu_in_pelvis:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        imu_in_torso:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        left_ankle_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_ankle_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_elbow_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_hip_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_hip_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_hip_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_knee_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_rubber_hand:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_shoulder_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_shoulder_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_shoulder_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_wrist_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_wrist_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        left_wrist_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        logo_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        mid360_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        pelvis:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        pelvis_contour_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_ankle_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_ankle_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_elbow_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_hip_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_hip_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_hip_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_knee_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_rubber_hand:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_shoulder_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_shoulder_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_shoulder_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_wrist_pitch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_wrist_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        right_wrist_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        torso_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        waist_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        waist_support_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        waist_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Filter (blacklist): ""
+      Filter (whitelist): ""
+      Frame Timeout: 60
+      Frames:
+        All Enabled: true
+        World:
+          Value: true
+        d435_color_optical_frame:
+          Value: true
+        d435_link:
+          Value: true
+        head_link:
+          Value: true
+        imu_in_pelvis:
+          Value: true
+        imu_in_torso:
+          Value: true
+        left_ankle_pitch_link:
+          Value: true
+        left_ankle_roll_link:
+          Value: true
+        left_elbow_link:
+          Value: true
+        left_hip_pitch_link:
+          Value: true
+        left_hip_roll_link:
+          Value: true
+        left_hip_yaw_link:
+          Value: true
+        left_knee_link:
+          Value: true
+        left_rubber_hand:
+          Value: true
+        left_shoulder_pitch_link:
+          Value: true
+        left_shoulder_roll_link:
+          Value: true
+        left_shoulder_yaw_link:
+          Value: true
+        left_wrist_pitch_link:
+          Value: true
+        left_wrist_roll_link:
+          Value: true
+        left_wrist_yaw_link:
+          Value: true
+        logo_link:
+          Value: true
+        mid360_link:
+          Value: true
+        pelvis:
+          Value: true
+        pelvis_contour_link:
+          Value: true
+        right_ankle_pitch_link:
+          Value: true
+        right_ankle_roll_link:
+          Value: true
+        right_elbow_link:
+          Value: true
+        right_hip_pitch_link:
+          Value: true
+        right_hip_roll_link:
+          Value: true
+        right_hip_yaw_link:
+          Value: true
+        right_knee_link:
+          Value: true
+        right_rubber_hand:
+          Value: true
+        right_shoulder_pitch_link:
+          Value: true
+        right_shoulder_roll_link:
+          Value: true
+        right_shoulder_yaw_link:
+          Value: true
+        right_wrist_pitch_link:
+          Value: true
+        right_wrist_roll_link:
+          Value: true
+        right_wrist_yaw_link:
+          Value: true
+        torso_link:
+          Value: true
+        waist_roll_link:
+          Value: true
+        waist_support_link:
+          Value: true
+        waist_yaw_link:
+          Value: true
+      Marker Scale: 0.25
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: false
+      Tree:
+        World:
+          pelvis:
+            imu_in_pelvis:
+              {}
+            left_hip_pitch_link:
+              left_hip_roll_link:
+                left_hip_yaw_link:
+                  left_knee_link:
+                    left_ankle_pitch_link:
+                      left_ankle_roll_link:
+                        {}
+            pelvis_contour_link:
+              {}
+            right_hip_pitch_link:
+              right_hip_roll_link:
+                right_hip_yaw_link:
+                  right_knee_link:
+                    right_ankle_pitch_link:
+                      right_ankle_roll_link:
+                        {}
+            waist_yaw_link:
+              waist_roll_link:
+                torso_link:
+                  d435_link:
+                    d435_color_optical_frame:
+                      {}
+                  head_link:
+                    {}
+                  imu_in_torso:
+                    {}
+                  left_shoulder_pitch_link:
+                    left_shoulder_roll_link:
+                      left_shoulder_yaw_link:
+                        left_elbow_link:
+                          left_wrist_roll_link:
+                            left_wrist_pitch_link:
+                              left_wrist_yaw_link:
+                                left_rubber_hand:
+                                  {}
+                  logo_link:
+                    {}
+                  mid360_link:
+                    {}
+                  right_shoulder_pitch_link:
+                    right_shoulder_roll_link:
+                      right_shoulder_yaw_link:
+                        right_elbow_link:
+                          right_wrist_roll_link:
+                            right_wrist_pitch_link:
+                              right_wrist_yaw_link:
+                                right_rubber_hand:
+                                  {}
+                  waist_support_link:
+                    {}
+      Update Interval: 0
+      Value: true
+    - Alpha: 1
       Autocompute Intensity Bounds: true
-      # Each message carries one emitterState cycle, so holding a few frames
-      # builds up the full non-repetitive Livox pattern instead of showing a
-      # single thin slice of it.
-      Decay Time: 0.5
-
-    - Class: rviz_default_plugins/Image
-      Name: CameraRGB
+      Autocompute Value Bounds:
+        Max Value: 0.7713940143585205
+        Min Value: 0.0007932186126708984
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: AxisColor
+      Decay Time: 0
       Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: CameraDepthCloud
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 2
+      Size (m): 0.009999999776482582
+      Style: Points
       Topic:
-        Value: /g1/camera/rgb
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /g1/camera/depth/points
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 0; 0
+      Color Transformer: FlatColor
+      Decay Time: 3
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Mid360_A
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.019999999552965164
+      Style: Points
+      Topic:
         Depth: 1
-        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /livox/mid360/points/a
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 0; 255; 0
+      Color Transformer: FlatColor
+      Decay Time: 3
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Mid360_B
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.019999999552965164
+      Style: Points
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /livox/mid360/points/b
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 0; 128; 255
+      Color Transformer: FlatColor
+      Decay Time: 3
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Mid360_C
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.019999999552965164
+      Style: Points
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /livox/mid360/points/c
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 0
+      Color Transformer: FlatColor
+      Decay Time: 3
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Mid360_D
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.019999999552965164
+      Style: Points
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /livox/mid360/points/d
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
       Max Value: 1
+      Median window: 5
       Min Value: 0
-
+      Name: CameraRGB
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /g1/camera/rgb
+      Value: true
     - Class: rviz_default_plugins/Image
+      Enabled: false
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
       Name: CameraDepth
-      Enabled: false
+      Normalize Range: true
       Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /g1/camera/depth
-        Depth: 1
-        Reliability Policy: Reliable
-
+      Value: false
     - Class: rviz_default_plugins/Image
-      Name: CameraSemantic
       Enabled: false
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: CameraSemantic
+      Normalize Range: true
       Topic:
-        Value: /g1/camera/semantic
         Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
         Reliability Policy: Reliable
-
+        Value: /g1/camera/semantic
+      Value: false
     - Class: rviz_default_plugins/MarkerArray
-      Name: Detections
       Enabled: true
-      Topic:
-        Value: /g1/detection_markers
-        Depth: 10
-        Reliability Policy: Reliable
+      Name: Detections
       Namespaces:
         {}
-
+      Topic:
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /g1/detection_markers
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 40; 42; 48
+    Fixed Frame: World
+    Frame Rate: 30
+  Name: root
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
     - Class: rviz_default_plugins/FocusCamera
     - Class: rviz_default_plugins/Measure
-
+      Line color: 128; 128; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Name: Current View
-      Distance: 12
+      Distance: 3.494359254837036
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
       Focal Point:
-        X: 2
-        Y: 0
-        Z: 0.8
-      Pitch: 0.3
-      Yaw: 2.4
+        X: -0.7429506182670593
+        Y: 0.5603225827217102
+        Z: 1.6991857290267944
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.4849993586540222
       Target Frame: World
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 2.094998836517334
     Saved: ~
-
 Window Geometry:
-  Height: 1000
-  Width: 1600
-  Displays:
+  CameraDepth:
     collapsed: false
   CameraRGB:
     collapsed: false
+  CameraSemantic:
+    collapsed: false
+  Displays:
+    collapsed: false
+  Height: 1000
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000100000000000001c90000038afc0200000005fb0000001600430061006d006500720061004400650070007400680000000000ffffffff0000001700fffffffb0000001c00430061006d00650072006100530065006d0061006e0074006900630000000000ffffffff0000001700fffffffb0000001200430061006d006500720061005200470042010000003f000000ec0000001700fffffffb000000100044006900730070006c00610079007301000001310000018d000000cc00fffffffb0000000a0056006900650077007301000002c400000105000000a900ffffff000004710000038a00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Views:
+    collapsed: false
+  Width: 1600
+  X: 50
+  Y: 32

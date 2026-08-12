@@ -38,6 +38,23 @@ TOPIC_CMD_VEL = "/g1/cmd_vel"
 TOPIC_IMU = "/g1/imu"
 
 CAMERA_FRAME = "d435_link"
+# REP-103 optical-frame convention (X-right, Y-down, Z-forward), as opposed
+# to d435_link's URDF/body convention (X-forward, Y-left, Z-up). Isaac's
+# camera annotators (rgb/depth/depth_pcl) always emit data in the optical
+# convention regardless of the sensor's world-space mount rotation - live-
+# verified 2026-08-10: /g1/camera/depth/points carried frame_id=d435_link
+# but its Z-axis behaved like depth (all-positive, increasing with range)
+# instead of up, i.e. the data just didn't match the frame it claimed. Every
+# image/cloud topic below is republished under this frame instead, with a
+# static TF (see attach_camera_publishers) supplying the fixed rotation from
+# d435_link - the same pattern RealSense's own driver uses
+# (camera_link -> camera_color_optical_frame).
+OPTICAL_FRAME = "d435_color_optical_frame"
+# Quaternion (IJKR = x,y,z,w) rotating d435_link's axes onto the optical
+# frame's: verified by hand (R * child_axis = parent_axis for all three
+# basis vectors) - this is the standard REP-103 camera_link->optical_frame
+# value used across the ROS ecosystem, not something invented for this repo.
+OPTICAL_QUAT_IJKR = (-0.5, 0.5, -0.5, 0.5)
 # imu_in_torso is a bare Xform in the URDF/USD (a TF frame only, per the
 # "IMU" comment in g1_29dof.urdf) - it carries no IsaacSensor schema until
 # spawn_imu_sensor() creates one under it.
@@ -82,10 +99,13 @@ def spawn_camera(
     # first attempt - made the "Z" term apply about the pre-tilt frame
     # instead, which reads as a world-plane rotation, not a roll about the
     # boresight. USD cameras look down -Z while the URDF frame looks down
-    # +X, hence the -90 deg Y tilt; roll is separately 90 deg clockwise per
-    # live visual check. Not yet re-verified after this restructure.
+    # +X, hence the -90 deg Y tilt. Roll corrected -90 deg (was +90) per
+    # user's live visual check 2026-08-11 - the boresight direction itself
+    # (this Y op) was independently verified correct via TF-transformed live
+    # depth points landing at floor height, so only the in-plane roll (a
+    # 180 deg flip from the old value) needed fixing, not the tilt.
     xform.AddRotateYOp().Set(-90.0 + math.degrees(D435_PITCH_RAD))
-    xform.AddRotateZOp().Set(90.0)
+    xform.AddRotateZOp().Set(-90.0)
 
     return path
 
@@ -124,13 +144,23 @@ def attach_camera_publishers(
     graph_path: str = "/ActionGraph/CameraROS2",
     width: int = 640,
     height: int = 480,
-    frame_id: str = CAMERA_FRAME,
+    frame_id: str = OPTICAL_FRAME,
 ) -> str:
     """Publish RGB, depth, semantic segmentation and camera_info.
 
     Each data type needs its own ROS2CameraHelper - a helper handles exactly
     one type and cannot be switched after activation - but all of them share a
     single render product.
+
+    Every helper's frame_id defaults to :data:`OPTICAL_FRAME`, not
+    :data:`CAMERA_FRAME` (``d435_link``) - the annotators these helpers read
+    (rgb/depth/depth_pcl) are always expressed in the optical convention
+    (X-right, Y-down, Z-forward) regardless of the sensor's world-space
+    mount, and claiming ``d435_link``'s body-frame convention (X-forward,
+    Y-left, Z-up) instead made the depth cloud render rotated 90 deg in
+    RViz - confirmed live 2026-08-11 (its Z-axis was all-positive/
+    range-like, not up-like). A static TF from ``d435_link`` supplies the
+    fixed rotation, same pattern as RealSense's own driver.
     """
     import omni.graph.core as og
 
@@ -140,6 +170,7 @@ def attach_camera_publishers(
         ("RunOneFrame", "isaacsim.core.nodes.OgnIsaacRunOneSimulationFrame"),
         ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
         ("CameraInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+        ("OpticalTF", "isaacsim.ros2.bridge.ROS2PublishRawTransformTree"),
     ]
     connections = [
         ("OnTick.outputs:tick", "RunOneFrame.inputs:execIn"),
@@ -147,6 +178,8 @@ def attach_camera_publishers(
         ("RenderProduct.outputs:execOut", "CameraInfo.inputs:execIn"),
         ("RenderProduct.outputs:renderProductPath", "CameraInfo.inputs:renderProductPath"),
         ("Context.outputs:context", "CameraInfo.inputs:context"),
+        ("OnTick.outputs:tick", "OpticalTF.inputs:execIn"),
+        ("Context.outputs:context", "OpticalTF.inputs:context"),
     ]
     values = [
         ("RenderProduct.inputs:cameraPrim", [camera_prim_path]),
@@ -154,6 +187,11 @@ def attach_camera_publishers(
         ("RenderProduct.inputs:height", height),
         ("CameraInfo.inputs:topicName", TOPIC_CAMERA_INFO),
         ("CameraInfo.inputs:frameId", frame_id),
+        ("OpticalTF.inputs:parentFrameId", CAMERA_FRAME),
+        ("OpticalTF.inputs:childFrameId", OPTICAL_FRAME),
+        ("OpticalTF.inputs:rotation", list(OPTICAL_QUAT_IJKR)),
+        ("OpticalTF.inputs:topicName", "/tf_static"),
+        ("OpticalTF.inputs:staticPublisher", True),
     ]
 
     for label, data_type, topic in (

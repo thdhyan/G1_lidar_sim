@@ -16,8 +16,8 @@ from isaaclab.app import AppLauncher
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_URDF = (
-    REPO.parent
-    / "OmniPerception/LidarSensor/LidarSensor/resources/robots/g1_29/g1_29dof.urdf"
+    REPO
+    / "assets/robot/g1_29/g1_29dof.urdf"
 )
 DEFAULT_USD = REPO / "assets/g1_29dof_sensors.usd"
 

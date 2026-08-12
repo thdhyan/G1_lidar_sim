@@ -18,7 +18,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 REPO = Path(__file__).resolve().parent.parent
-URDF = REPO.parent / "OmniPerception/LidarSensor/LidarSensor/resources/robots/g1_29/g1_29dof.urdf"
+URDF = REPO / "assets/robot/g1_29/g1_29dof.urdf"
 RVIZ_CONFIG = REPO / "rviz/g1_rtx.rviz"
 
 

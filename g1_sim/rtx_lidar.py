@@ -35,25 +35,68 @@ renders three annotators per frame and is usually the larger cost of the two.
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO / "assets/lidar_configs"
 
+# Maps our generated JSON profile's field names (schema of the deprecated
+# ``IsaacSensorCreateRtxLidar`` Kit command's config files) to the real,
+# currently-live ``OmniSensorGenericLidarCoreAPI`` USD schema's attribute
+# names - confirmed by reading the schema straight from
+# ``omni.sensors.nv.common``'s ``generatedSchema.usda`` and a known-good
+# example (``omni.cip.mega``'s ``OmniLidarCheckerPass.usda``). Renamed or
+# dropped where the two schemas disagree; see ``spawn_mid360``'s docstring
+# for why this translation exists at all instead of using the JSON directly.
+_PROFILE_TO_CORE_ATTR = {
+    "nearRangeM": "nearRangeM",
+    "farRangeM": "farRangeM",
+    "rangeResolutionM": "rangeResolutionM",
+    "rangeAccuracyM": "rangeAccuracyM",
+    "minReflectance": "minReflectance",
+    "pulseTimeNs": "pulseTimeNs",
+    "maxReturns": "maxReturns",
+    "scanRateBaseHz": "scanRateBaseHz",
+    "patternFiringRateHz": "patternFiringRateHz",
+    "numberOfEmitters": "numberOfEmitters",
+    "numberOfChannels": "numberOfChannels",
+    "rangeCount": "rangeCount",
+    "azimuthErrorMean": "azimuthErrorMean",
+    "azimuthErrorStd": "azimuthErrorStd",
+    "elevationErrorMean": "elevationErrorMean",
+    "elevationErrorStd": "elevationErrorStd",
+    "validStartAzimuthDeg": "validStartAzimuthDeg",
+    "validEndAzimuthDeg": "validEndAzimuthDeg",
+    "stateResolutionStep": "stateResolutionStep",
+    # Renamed between schemas.
+    "minReflectanceRange": "minReflectionRangeM",
+    "wavelengthNm": "waveLengthNm",
+    # avgPowerW and emitterStateCount have no equivalent in the real schema
+    # (peakPowerW exists instead, and state count is implicit in how many
+    # emitterState instances are applied) - dropped, not mapped.
+}
+_TOKEN_VALUES = {
+    "scanType": {"solidState": "SOLID_STATE"},
+    "intensityProcessing": {"normalization": "NORMALIZATION"},
+}
+
 # Matches the real device and the generated configs.
 SCAN_RATE_HZ = 10.0
 
-# Mount on torso_link per the URDF actually used by
-# convert_g1_urdf_to_usd.py (OmniPerception/LidarSensor/.../g1_29dof.urdf):
-# xyz=(0.0002835, 0.00003, 0.4188), rpy=(3.14, 0, 0) — a 180 deg roll, no
-# pitch. NVIDIA's GR00T-WholeBodyControl repo ships a *different* g1_29dof.urdf
+# The URDF's mid360_joint (assets/robot/g1_29/g1_29dof.urdf, used by
+# convert_g1_urdf_to_usd.py): xyz=(0.0002835, 0.00003, 0.4188),
+# rpy=(3.14, 0, 0) — a 180 deg roll, no pitch. This pose is baked into the
+# USD's mid360_link prim, which is what the sim now mounts the sensor *as*
+# (identity transform) — see the NOTE below.
+# NVIDIA's GR00T-WholeBodyControl repo ships a *different* g1_29dof.urdf
 # with a different mid360_joint (xyz z=0.40618, rpy=(0, 0.0401, 0), no roll) -
-# this file previously copied that one by mistake. Since the USD's torso_link
-# frame comes from the OmniPerception URDF, not GR00T's, the mismatch pointed
-# the sensor's local Z into the ceiling instead of the ground. Getting this
-# wrong inverts the cloud - verify by checking the live cloud in RViz covers
-# the ground/room, not open sky, before touching this again.
+# this file previously copied that one by mistake. Since the USD's frames come
+# from the vendored URDF, not GR00T's, the mismatch pointed the sensor's local Z
+# into the ceiling instead of the ground. This is now moot for the sim path
+# (the sensor uses mid360_link's own pose, identity transform) but still applies
+# to any code that mounts on torso_link with these constants.
 # Briefly lowered 0.2 m (to 0.2188) 2026-08-10 to test whether the real
 # mount's ~9.7 m blind cone explained a narrow-arc-not-ring cloud. Reverted
 # to the real URDF mount height per user request - didn't resolve the arc
@@ -61,6 +104,13 @@ SCAN_RATE_HZ = 10.0
 # priority. If revisiting the blind-cone theory, the math was: blind_radius
 # = 8x mount height, so lowering height shrinks the cone and lets closer
 # geometry register.
+# NOTE (2026-08-11): the sim scripts no longer apply these to the sensor prim.
+# The Mid-360 is now spawned *as* the USD's `mid360_link` prim with an identity
+# local transform, so the URDF pose already baked into that prim is the single
+# source of truth and the ROS frame_id (`mid360_link`) matches the point origin
+# exactly. These constants are kept as documentation of the URDF joint and are
+# still used by the diag scripts (which mount on torso_link) and for the
+# mount-height estimate below.
 MID360_POS = (0.0002835, 0.00003, 0.4188)
 # rpy=(3.14, 0, 0) -> wxyz quaternion for a 180 deg roll about X-axis.
 _MID360_ROLL = __import__("math").pi
@@ -116,6 +166,104 @@ def install_configs(config_dir: Path | str = CONFIG_DIR) -> list[str]:
     return [p.stem for p in profiles]
 
 
+# (attribute name suffix -> Sdf type name string) for the per-profile scalar
+# fields this module actually sets. Everything here is a plain float scalar
+# in the real schema except the tokens/uints called out explicitly below.
+_UINT_SCALAR_ATTRS = {
+    "maxReturns", "scanRateBaseHz", "patternFiringRateHz", "numberOfEmitters",
+    "numberOfChannels", "rangeCount", "pulseTimeNs", "stateResolutionStep",
+}
+_TOKEN_ATTRS = {"scanType", "rayType", "intensityProcessing", "intensityMappingType"}
+
+
+def _profile_to_attributes(profile: dict) -> list[tuple[str, str, object]]:
+    """Translate one generated JSON profile into a flat list of
+    ``(attribute_name, sdf_type_name, value)`` for
+    ``OmniSensorGenericLidarCoreAPI``/``...EmitterStateAPI``.
+
+    Why this exists at all: ``omni.kit.commands.execute("IsaacSensorCreateRtxLidar",
+    config=name, ...)`` resolves ``config`` by name against a directory the
+    ``isaacsim.sensors.rtx`` extension appears to index once, at
+    extension-enable time - not on every call. Every prim created this way
+    logged ``Config '<name>' not found for OmniLidar`` regardless of the
+    JSON's name or content (live-verified 2026-08-11 across three separate
+    fixes: restructuring emitterStates into elevation-binned lines, renaming
+    the config, and moving the install ahead of extension-enable - all
+    produced byte-identical output). The prim was silently left at the
+    ``OmniSensorGenericLidarCoreAPI`` schema's own built-in defaults the
+    entire time: its default ``elevationDeg`` is a repeating 32-value ramp
+    from -15 to +10 deg, and the *last two* values of every cycle are
+    9.19 and 10.0 - an exact match to what every one of those "fixes"
+    still produced. ``isaacsim.sensors.experimental.rtx`` (the
+    non-deprecated replacement) resolves named configs to USD assets on
+    Nucleus instead of JSON, and Livox isn't among NVIDIA's shipped
+    profiles - so this authors the ``omni:sensor:Core:*`` attributes
+    directly from our own JSON, sidestepping config-name resolution
+    entirely. Field mapping confirmed against
+    ``omni.sensors.nv.common``'s ``generatedSchema.usda`` and
+    ``omni.cip.mega``'s ``OmniLidarCheckerPass.usda`` (a real validated
+    example), not guessed.
+
+    Returns a flat list rather than a dict passed to ``Lidar(attributes=...)``
+    because that path routes through ``omni.replicator.core``'s
+    ``modify.set_attributes()``, which does ``python_class(*v)`` for any
+    Python ``list`` value - star-unpacking every element as a positional
+    constructor arg. Fine for a 3-element translate, broken for a
+    20,000-element ``azimuthDeg`` (confirmed live 2026-08-11:
+    ``Boost.Python.ArgumentError``, no C++ signature takes 20,000 floats).
+    Authoring straight through ``Usd.Attribute.Set()`` - the caller's job,
+    using this function's output - sidesteps that helper entirely.
+    """
+    out: list[tuple[str, str, object]] = []
+
+    def add(name: str, sdf_type: str, value) -> None:
+        out.append((f"omni:sensor:Core:{name}", sdf_type, value))
+
+    for src, dst in _PROFILE_TO_CORE_ATTR.items():
+        if src not in profile:
+            continue
+        if dst in _UINT_SCALAR_ATTRS:
+            add(dst, "uint", int(profile[src]))
+        else:
+            add(dst, "float", float(profile[src]))
+
+    for field in _TOKEN_ATTRS:
+        if field in profile:
+            value = _TOKEN_VALUES.get(field, {}).get(profile[field], profile[field])
+            add(field, "token", value)
+
+    if "ranges" in profile:
+        add("rangesMinM", "float[]", [float(r["min"]) for r in profile["ranges"]])
+        add("rangesMaxM", "float[]", [float(r["max"]) for r in profile["ranges"]])
+
+    # numLines/numRaysPerLine aren't in _PROFILE_TO_CORE_ATTR (not a 1:1 rename,
+    # numRaysPerLine is an array) - without these the schema default numLines=0
+    # stays in place while gen_mid360_rtx_config.py's per-state "bank" values
+    # reference line indices 0..39, and the RTX engine rejects every param
+    # update with "bankId 0 at index 0 is greater than the profile numLines 0"
+    # - confirmed live 2026-08-11 via scripts/diag_warehouse_lidar.py: 0 points
+    # collected across 300 steps with this omission, schema confirms
+    # omni:sensor:Core:numLines (uint) / omni:sensor:Core:numRaysPerLine
+    # (uint[], one entry per line) are the real attribute names.
+    if "numLines" in profile:
+        add("numLines", "uint", int(profile["numLines"]))
+    if "numRaysPerLine" in profile:
+        add("numRaysPerLine", "uint[]", [int(n) for n in profile["numRaysPerLine"]])
+
+    for i, state in enumerate(profile["emitterStates"]):
+        prefix = f"emitterState:s{i:03d}:"
+        add(prefix + "azimuthDeg", "float[]", state["azimuthDeg"])
+        add(prefix + "elevationDeg", "float[]", state["elevationDeg"])
+        add(prefix + "fireTimeNs", "uint[]", state["fireTimeNs"])
+        add(prefix + "channelId", "uint[]", state["channelId"])
+        if state.get("rangeId"):
+            add(prefix + "rangeId", "uint[]", state["rangeId"])
+        if state.get("bank"):
+            add(prefix + "bank", "uint[]", state["bank"])
+
+    return out
+
+
 def spawn_mid360(
     parent_prim_path: str,
     config_dir: Path | str = CONFIG_DIR,
@@ -127,7 +275,8 @@ def spawn_mid360(
     Args:
         parent_prim_path: prim to mount under, e.g.
             ``/World/envs/env_0/Robot/torso_link``.
-        config_dir: directory holding the generated profiles.
+        config_dir: directory holding the generated profiles (from
+            ``scripts/gen_mid360_rtx_config.py``).
         translation: sensor offset from the parent, in metres.
         orientation: sensor rotation as a wxyz quaternion. The default carries
             the URDF's 180 deg roll; getting it wrong inverts the cloud.
@@ -135,31 +284,57 @@ def spawn_mid360(
     Returns:
         The spawned prim paths, one per profile.
     """
-    import omni.kit.commands
-    from pxr import Gf, Sdf
+    import omni.usd
+    from pxr import Gf, Sdf, UsdGeom
 
-    names = install_configs(config_dir)
+    sdf_types = {
+        "float": Sdf.ValueTypeNames.Float,
+        "uint": Sdf.ValueTypeNames.UInt,
+        "token": Sdf.ValueTypeNames.Token,
+        "float[]": Sdf.ValueTypeNames.FloatArray,
+        "uint[]": Sdf.ValueTypeNames.UIntArray,
+    }
 
+    config_dir = Path(config_dir)
+    profiles = sorted(config_dir.glob("Livox_Mid360_*.json"))
+    if not profiles:
+        raise FileNotFoundError(f"no Livox_Mid360_*.json in {config_dir}")
+
+    stage = omni.usd.get_context().get_stage()
     prim_paths = []
-    for name in names:
+    for profile_path in profiles:
+        name = profile_path.stem
+        profile = json.loads(profile_path.read_text())["profile"]
+        entries = _profile_to_attributes(profile)
+
         path = f"{parent_prim_path}/{name}"
-        _, prim = omni.kit.commands.execute(
-            "IsaacSensorCreateRtxLidar",
-            path=name,
-            parent=parent_prim_path,
-            config=name,
-            translation=Gf.Vec3d(*translation),
-            orientation=Gf.Quatd(*orientation),
-        )
-        if prim is None:
-            raise RuntimeError(f"failed to create RTX LiDAR from config '{name}'")
+        # Authored directly via pxr.Usd, not isaacsim.sensors.experimental.rtx's
+        # Lidar(attributes=...) - see _profile_to_attributes' docstring for
+        # why: that path star-unpacks large arrays and crashes.
+        prim = stage.DefinePrim(path, "OmniLidar")
+        prim.AddAppliedSchema("OmniSensorGenericLidarCoreAPI")
+        for i in range(len(profile["emitterStates"])):
+            prim.AddAppliedSchema(f"OmniSensorGenericLidarCoreEmitterStateAPI:s{i:03d}")
+
+        for attr_name, type_key, value in entries:
+            attr = prim.CreateAttribute(attr_name, sdf_types[type_key])
+            attr.Set(value)
 
         # Isaac Sim 6.0 enables multi-tick rendering, so tickRate genuinely
-        # limits how often the sensor renders. This is what keeps the point
-        # rate at the real 200k/s instead of the simulation frame rate - on
-        # 5.1 the attribute was ignored and the sensor fired every frame.
-        tick_attr = prim.CreateAttribute("omni:sensor:tickRate", Sdf.ValueTypeNames.Float)
-        tick_attr.Set(SCAN_RATE_HZ)
+        # limits how often the sensor renders - see rtx_lidar.py's module
+        # docstring for why that matters on 6.0 vs 5.1.
+        prim.CreateAttribute("omni:sensor:tickRate", Sdf.ValueTypeNames.Float).Set(SCAN_RATE_HZ)
+        # The schema default is False ("when true the model will accumulate
+        # the outputs until one scan is complete"); the deprecated
+        # IsaacSensorCreateRtxLidar command explicitly overrode it to True
+        # after creation (isaacsim.sensors.rtx's commands.py, do()) - carried
+        # over here since we're not going through that command anymore.
+        prim.CreateAttribute("omni:sensor:Core:accumulateOutputs", Sdf.ValueTypeNames.Bool).Set(True)
+
+        xform = UsdGeom.Xformable(prim)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(*translation))
+        xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(*orientation))
 
         prim_paths.append(path)
 

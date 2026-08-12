@@ -208,6 +208,33 @@ def discover_prims_at(stage, scope_path: str) -> list[str]:
     return [child.GetPath().pathString for child in prim.GetChildren()]
 
 
+def strip_carter_cameras(stage, carters_scope: str = "/World/Robots/carters") -> int:
+    """Deactivate every camera on the Nova Carters, keeping the robots themselves.
+
+    Each Nova Carter ships a Hawk/Owl sensor rig (~12 cameras under
+    ``chassis_link/sensors/``). We never publish them - our own G1 D435 does the
+    camera work - but Hydra still processes each one, and on an 8 GB GPU the
+    stack of RTX camera passes is enough to OOM-crash the whole app. Setting the
+    camera prims inactive removes them from stage traversal (so Hydra never
+    allocates a render pass for them) while the carter body, physics, IMU and
+    IRA-driven motion are untouched.
+
+    Returns the number of cameras deactivated.
+    """
+    from pxr import Usd, UsdGeom
+
+    scope = stage.GetPrimAtPath(carters_scope)
+    if not scope.IsValid():
+        return 0
+
+    n = 0
+    for prim in Usd.PrimRange(scope):
+        if prim.IsA(UsdGeom.Camera):
+            prim.SetActive(False)
+            n += 1
+    return n
+
+
 def discover_actor_prims(
     stage,
     humans_scope: str = "/World/Characters/humans",
@@ -367,3 +394,35 @@ def run_setup_blocking(
     ok = task.result()
     print(f"[ira_actors] setup {'OK' if ok else 'FAILED'} in {time.time()-t0:.1f}s")
     return ok
+
+
+def save_baked_scene(stage, path: Path) -> None:
+    """Export the current stage (post-IRA-setup: warehouse + navmesh +
+    spawned characters/carters) to a standalone USD file, so a future run can
+    skip the Nucleus warehouse download and the navmesh bake by loading this
+    directly instead of calling :func:`setup` again.
+
+    Caveat: this captures composed geometry/prim state as of the save
+    moment, not IRA's live Python wander controllers - characters/carters
+    loaded back from this file sit static at their saved pose until IRA's
+    own ``setup_simulation()`` runs again. Useful for iterating on the
+    warehouse/lidar/robot pipeline without re-paying the ~60-80s bake cost
+    each launch; not a substitute for a real run when actor motion matters.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stage.Export(str(path))
+    print(f"[ira_actors] baked scene saved -> {path}")
+
+
+def load_baked_scene(path: Path):
+    """Open a previously :func:`save_baked_scene`'d USD as the new root
+    stage - mirrors IRA's own ``setup_simulation()`` behaviour of replacing
+    the root stage (not adding a reference), so downstream code (e.g.
+    ``spawn_g1``'s session-layer edit-target logic) doesn't need to know
+    which path built the scene."""
+    import omni.usd
+
+    ctx = omni.usd.get_context()
+    ctx.open_stage(str(path))
+    print(f"[ira_actors] baked scene loaded <- {path}")
+    return ctx.get_stage()

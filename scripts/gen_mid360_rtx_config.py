@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 """Generate RTX LiDAR configs for the Livox Mid-360 from its real scan pattern.
 
-The Mid-360's firing pattern is non-repetitive: it does not reset every frame,
-it repeats after N frames. RTX LiDAR models this with ``emitterStates`` - one
-entry per frame in the cycle - advanced by ``stateResolutionStep``.
+Follows the recipe from IsaacSim discussion #685
+(https://github.com/isaac-sim/IsaacSim/discussions/685): extract real
+per-frame (azimuth, elevation, fireTimeNs, channelId) tuples and encode them
+as a sequence of ``emitterStates`` advanced one per frame via
+``stateResolutionStep=1``. No artificial elevation binning/line-grouping -
+each state carries its points' real, continuously-varying elevation values
+directly (numLines=1, one line holding every emitter in the state).
 
 ``mid360.npy`` holds 800,000 (theta, phi) pairs. At the real sensor's
 200,000 points/s and 10 Hz that is 20,000 points per frame, so the file is
 exactly 40 frames of firing pattern.
 
-The Hydra API caps a single LiDAR prim at ~5 MB of emitter data, which is
-roughly 200k emitters. 40 x 20,000 = 800k does not fit, so the pattern is split
-across several prims mounted at the same transform - the approach described in
-IsaacSim discussion #685. Their union reproduces the full pattern.
+The discussion's reference example splits one physical sensor into several
+co-located prims, each ~5,000 emitters/state, standing in for a subset of
+the sensor's beams. We don't have per-beam-labeled data, so each of the 40
+real frames is instead split spatially into NUM_PRIMS contiguous chunks of
+POINTS_PER_FRAME / NUM_PRIMS points; chunk i always goes to prim i, so all
+prims advance through the same 40-frame timeline in sync (each contributing
+its slice of the *current* frame), rather than each prim owning a disjoint
+span of frames.
 
 Writes one JSON per prim, in the schema of the shipped
 ``Example_Solid_State.json``:
@@ -29,10 +37,7 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_PATTERN = (
-    REPO.parent
-    / "OmniPerception/LidarSensor/LidarSensor/sensor_pattern/sensor_lidar/scan_mode/mid360.npy"
-)
+DEFAULT_PATTERN = REPO / "assets/scan_patterns/mid360.npy"
 DEFAULT_OUT = REPO / "assets/lidar_configs"
 
 # Real Mid-360 figures.
@@ -40,16 +45,18 @@ POINTS_PER_SECOND = 200_000
 SCAN_RATE_HZ = 10.0
 POINTS_PER_FRAME = int(POINTS_PER_SECOND / SCAN_RATE_HZ)  # 20,000
 
-# Keep each prim under the ~5 MB Hydra limit (~200k emitters). 4 prims x 10
-# frames x 20,000 = 800k total, i.e. 200k each.
+# Matches the discussion's reference example (~5,000 emitters/state/prim).
 NUM_PRIMS = 4
 
 
 def build_emitter_state(chunk: np.ndarray) -> dict:
-    """Turn one frame of (theta, phi) radians into an emitterState entry.
+    """Turn one prim's slice of one frame into an emitterState entry.
 
-    ``fireTimeNs`` spreads the frame's points evenly across one scan period,
-    which is what gives the sweep its time structure.
+    Real per-point azimuth/elevation, in the pattern's own order - no
+    binning or elevation quantization. ``fireTimeNs`` spreads the slice's
+    points evenly across one scan period; it no longer reflects the
+    pattern's real per-point firing order, only the frame-level 100 ms
+    period, which is all ``tickRate``-based playback actually relies on.
     """
     azimuth = np.degrees(chunk[:, 0]).astype(np.float64)
     elevation = np.degrees(chunk[:, 1]).astype(np.float64)
@@ -67,6 +74,11 @@ def build_emitter_state(chunk: np.ndarray) -> dict:
         "fireTimeNs": fire_time.tolist(),
         "channelId": list(range(1, n + 1)),
         "rangeId": [0] * n,
+        # Per-emitter line index. numLines=1, so every point is on line 0.
+        # The shipped Example_Solid_State.json always authors this array; when
+        # it is absent rtx_lidar._profile_to_attributes never writes the
+        # omni:sensor:Core:emitterState:sNNN:bank USD attr, and the engine has
+        # no per-point line mapping to validate rays against numRaysPerLine.
         "bank": [0] * n,
     }
 
@@ -74,6 +86,11 @@ def build_emitter_state(chunk: np.ndarray) -> dict:
 def build_profile(states: list[dict], model_name: str, max_range: float) -> dict:
     """Assemble the RTX LiDAR profile around a list of emitter states."""
     n_emitters = len(states[0]["azimuthDeg"])
+    # Single line holding every emitter in the state - avoids the
+    # numLines/numRaysPerLine-vs-bank mismatch that silently dropped most
+    # points when lines were used (live-verified 2026-08-11), and the
+    # Mid-360 has no real discrete channels to bin into anyway.
+    num_rays_per_line = [n_emitters]
 
     return {
         "class": "sensor",
@@ -100,8 +117,8 @@ def build_profile(states: list[dict], model_name: str, max_range: float) -> dict
             "patternFiringRateHz": int(SCAN_RATE_HZ),
             "numberOfEmitters": n_emitters,
             "numberOfChannels": n_emitters,
-            "numLines": 1,
-            "numRaysPerLine": [n_emitters],
+            "numLines": len(num_rays_per_line),
+            "numRaysPerLine": num_rays_per_line,
             "rangeCount": 1,
             "ranges": [{"min": 0.1, "max": max_range}],
             "azimuthErrorMean": 0.0,
@@ -145,26 +162,27 @@ def main() -> None:
     frames = args.frames if args.frames > 0 else total_frames
     frames = min(frames, total_frames)
 
-    # Distribute frames over prims as evenly as possible.
-    per_prim = frames // args.num_prims
-    if per_prim == 0:
-        raise SystemExit(f"[GEN] {frames} frames cannot fill {args.num_prims} prims")
+    emitters_per_prim = POINTS_PER_FRAME // args.num_prims
+    if emitters_per_prim == 0:
+        raise SystemExit(f"[GEN] {POINTS_PER_FRAME} points/frame cannot fill {args.num_prims} prims")
 
     print(f"[GEN] pattern      : {pattern_path.name}  ({len(data):,} points)")
     print(f"[GEN] frames       : {frames} of {total_frames} available")
     print(f"[GEN] points/frame : {POINTS_PER_FRAME:,}")
-    print(f"[GEN] prims        : {args.num_prims} x {per_prim} emitterStates")
+    print(f"[GEN] prims        : {args.num_prims} x {emitters_per_prim:,} emitters/state, {frames} states (synced timeline)")
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Every prim advances through the same `frames`-long timeline in sync,
+    # each holding a different spatial slice of the current frame - see
+    # module docstring.
     written = []
     for prim in range(args.num_prims):
         states = []
-        for i in range(per_prim):
-            frame = prim * per_prim + i
-            start = frame * POINTS_PER_FRAME
-            states.append(build_emitter_state(data[start : start + POINTS_PER_FRAME]))
+        for frame in range(frames):
+            start = frame * POINTS_PER_FRAME + prim * emitters_per_prim
+            states.append(build_emitter_state(data[start : start + emitters_per_prim]))
 
         name = f"Livox_Mid360_{chr(ord('A') + prim)}"
         profile = build_profile(states, name, args.max_range)
@@ -184,9 +202,9 @@ def main() -> None:
         print("[GEN] Re-run with more --num-prims or fewer --frames.")
         raise SystemExit(1)
 
-    total = sum(n for _, _, n in written) * POINTS_PER_FRAME
+    total = args.num_prims * emitters_per_prim * frames
     print(f"\n[GEN] total emitters: {total:,} across {args.num_prims} prims")
-    print(f"[GEN] cycle length  : {sum(n for _, _, n in written) / args.num_prims / SCAN_RATE_HZ:.1f} s")
+    print(f"[GEN] cycle length  : {frames / SCAN_RATE_HZ:.1f} s")
     print("[GEN] PASS")
 
 

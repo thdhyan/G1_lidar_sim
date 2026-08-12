@@ -1,24 +1,26 @@
-"""Publish RTX LiDAR returns to ROS2 by reading the sensor annotator directly.
+"""Publish raw per-prim RTX LiDAR returns to ROS2 via the ``LidarSensor`` runtime class.
 
-``ROS2RtxLidarHelper`` advertises its topic but never emits on this setup, so
-this reads the same data the helper would - via the
-``IsaacExtractRTXSensorPointCloud`` annotator - and publishes it with rclpy
-instead.
+Was reading ``IsaacExtractRTXSensorPointCloud`` straight off a manually
+attached ``rep.create.render_product()`` until 2026-08-11: that produced a
+valid annotator (real keys, no error) but an always-empty ``"data"`` array
+for every one of our hand-authored ``OmniLidar`` prims. Per Isaac Sim
+6.0.1's own docs (isaacsim_sensors_rtx_lidar.html, fetched live): "Raw prim
+creation alone is insufficient. You must use the ``LidarSensor`` runtime
+wrapper to enable annotators" - manually calling
+``rep.AnnotatorRegistry.get_annotator(...).attach(...)`` skips whatever
+setup ``LidarSensor`` does to actually wire the render product into the RTX
+sensor engine. ``LidarSensor(path, annotators=["generic-model-output"])`` +
+``get_data("generic-model-output")`` + ``parse_generic_model_output_data()``
+is the currently-supported path; ``GenericModelOutput.x/.y/.z`` are the
+Cartesian point arrays (confirmed via the compiled module's ``.pyi`` stub -
+no plain "intensity" field exists there, hence the constant fallback below,
+same as before).
 
-Was ``IsaacCreateRTXLidarScanBuffer`` until 2026-08-10: that annotator is
-deprecated in this Isaac Sim 6.0.1 build and, per its own deprecation
-warning, only returns azimuth in [-90, 90] deg instead of the full 360 deg
-sweep - confirmed live (RViz showed a narrow arc, not a ring). NVIDIA's
-warning points at the ``GenericModelOutput`` annotator as the replacement;
-``IsaacExtractRTXSensorPointCloud`` is the Cartesian-conversion annotator
-built on top of it (see
-``isaacsim.sensors.rtx.nodes.../tests/test_point_cloud_annotator.py`` for
-the reference usage this was ported from). Not yet re-verified live after
-this swap - if the ``"data"``/``"intensity"`` dict keys turn out to differ
-from the old annotator's, ``_gather()`` logs the actual keys once.
-
-The several co-located sensor prims that make up one Mid-360 are merged into a
-single cloud, so subscribers see one sensor.
+Each prim publishes its own raw cloud to its own topic - no cross-prim
+merge. Verifying prim-by-prim coverage (2026-08-11) needed to see each
+prim's returns in isolation, since the previous merged-single-topic design
+made it impossible to tell whether a coverage gap came from one broken prim
+or all of them.
 
 In the ``isaac`` env (Python 3.12) the system ROS2 jazzy rclpy imports
 directly, so no bundled-rclpy workaround is needed.
@@ -30,27 +32,26 @@ import numpy as np
 
 
 class RtxLidarPublisher:
-    """Merges several RTX LiDAR prims into one ``sensor_msgs/PointCloud2``.
+    """Publishes each RTX LiDAR prim's raw returns as its own ``sensor_msgs/PointCloud2``.
 
     Args:
         prim_paths: sensor prims from :func:`g1_sim.rtx_lidar.spawn_mid360`.
-        topic: topic to publish on.
+        topic: base topic; each prim publishes to ``{topic}/{a,b,c,...}``.
         frame_id: TF frame the points are expressed in.
         publish_rate: target rate in Hz; should match the sensor's scan rate.
-        max_points: cap on points per message. The full Mid-360 returns ~700k
-            per frame across all prims, which is far more than the real
-            sensor's 20k and enough to stall RViz, so the cloud is subsampled.
+        max_points: cap on points per prim per message.
     """
 
     def __init__(
         self,
         prim_paths: list[str],
-        topic: str | list[str] = "/livox/mid360/points",
+        topic: str = "/livox/mid360/points",
         frame_id: str = "mid360_link",
         publish_rate: float = 10.0,
         max_points: int = 20000,
+        max_range_m: float = 40.0,
     ):
-        import omni.replicator.core as rep
+        from isaacsim.sensors.experimental.rtx import LidarSensor
         from rclpy.node import Node
         from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
         from sensor_msgs.msg import PointCloud2, PointField
@@ -58,20 +59,34 @@ class RtxLidarPublisher:
         self._PointCloud2 = PointCloud2
         self.frame_id = frame_id
         self.max_points = max_points
+        # Hard cap matching the profile's own farRangeM (see
+        # gen_mid360_rtx_config.py) - a real return can never exceed it.
+        # Points beyond this are provably not real hits: live-verified
+        # 2026-08-11, points at 95-165m appeared against a farRangeM=40
+        # sensor, exactly coincident with "GMO magic number is not correct"
+        # buffer-corruption warnings (isaacsim.sensors.experimental.rtx.impl.
+        # utils) - a known CUDA buffer race (IsaacSim discussion #685) reading
+        # the RTX sensor's buffer while the GPU is still writing it. This
+        # filter discards the resulting garbage rather than fixing the race
+        # itself (which is upstream, in the RTX sensor plugin).
+        self.max_range_m = max_range_m
         self.publish_period = 1.0 / publish_rate
         self._last_publish = -float("inf")
-        # Slices of the sweep awaiting the next publish.
-        self._pending: list[tuple] = []
 
-        # One annotator per prim. Isaac Sim 6.0 dropped the RtxSensorCpu prefix
-        # this annotator carried in earlier releases.
-        self.annotators = []
-        for i, prim_path in enumerate(prim_paths):
-            rp = rep.create.render_product(prim_path, [1, 1], name=f"mid360_pub_{i}")
-            annot = rep.AnnotatorRegistry.get_annotator("IsaacExtractRTXSensorPointCloud")
-            annot.attach([rp])
-            self.annotators.append(annot)
+        self.prim_paths = list(prim_paths)
+        self.sensors = [LidarSensor(p, annotators=["generic-model-output"]) for p in prim_paths]
         self._logged_keys = False
+        # Slices of each prim's sweep awaiting the next publish.
+        self._pending: list[list[tuple]] = [[] for _ in prim_paths]
+        # Raw (pre-filter) point counts and az/el ranges for the window
+        # currently being accumulated, and the most recently completed one -
+        # diagnostic only, not used to build the published messages.
+        self.window_prim_counts = [0] * len(prim_paths)
+        self.window_az_range = [[float("inf"), float("-inf")] for _ in prim_paths]
+        self.window_el_range = [[float("inf"), float("-inf")] for _ in prim_paths]
+        self.last_window_prim_counts = [0] * len(prim_paths)
+        self.last_window_az_range = [[0.0, 0.0] for _ in prim_paths]
+        self.last_window_el_range = [[0.0, 0.0] for _ in prim_paths]
 
         self.node = Node("g1_rtx_lidar_publisher")
         # Best-effort matches how sensor streams are normally consumed: a
@@ -81,8 +96,8 @@ class RtxLidarPublisher:
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        topics = [topic] if isinstance(topic, str) else list(topic)
-        self.publishers = [self.node.create_publisher(PointCloud2, t, qos) for t in topics]
+        self.topics = [f"{topic}/{chr(ord('a') + i)}" for i in range(len(prim_paths))]
+        self.publishers = [self.node.create_publisher(PointCloud2, t, qos) for t in self.topics]
 
         self._fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
@@ -92,92 +107,129 @@ class RtxLidarPublisher:
         ]
 
         self.node.get_logger().info(
-            f"publishing {topics} in frame {frame_id} from {len(prim_paths)} prims"
+            f"publishing raw per-prim clouds {self.topics} in frame {frame_id} "
+            f"from {len(prim_paths)} prims (LidarSensor, no merge)"
         )
 
     def accumulate(self) -> int:
-        """Collect one render's worth of returns. Call every simulation step.
+        """Collect one render's worth of returns from every prim. Call every simulation step.
 
         Each render yields only the emitters that fired in that frame, so a
         single read is a thin slice of the sweep. Accumulating between
         publishes is what turns those slices into a full scan.
 
-        Returns the number of points collected this call.
+        Returns the total number of points collected this call, across all prims.
         """
-        points, intensities = self._gather()
-        if points is None:
-            return 0
-        self._pending.append((points, intensities))
-        return len(points)
+        total = 0
+        for prim_idx, sensor in enumerate(self.sensors):
+            points, intensities = self._gather_one(sensor, prim_idx)
+            if points is None:
+                continue
+            self._pending[prim_idx].append((points, intensities))
+            total += len(points)
+        return total
 
     def publish(self, sim_time: float) -> int:
-        """Publish the accumulated scan if due. Returns points sent."""
+        """Publish each prim's accumulated scan if due. Returns total points sent."""
         if sim_time - self._last_publish < self.publish_period:
             return 0
         self._last_publish = sim_time
 
-        if not self._pending:
-            return 0
+        self.last_window_prim_counts = self.window_prim_counts
+        self.last_window_az_range = self.window_az_range
+        self.last_window_el_range = self.window_el_range
+        self.window_prim_counts = [0] * len(self.prim_paths)
+        self.window_az_range = [[float("inf"), float("-inf")] for _ in self.prim_paths]
+        self.window_el_range = [[float("inf"), float("-inf")] for _ in self.prim_paths]
 
-        points = np.vstack([p for p, _ in self._pending])
-        intensities = np.concatenate([i for _, i in self._pending])
-        self._pending.clear()
-
-        if len(points) > self.max_points:
-            # Stride rather than slice: a contiguous slice would take one part
-            # of the sweep, whereas striding preserves the pattern's shape.
-            idx = np.linspace(0, len(points) - 1, self.max_points).astype(np.int64)
-            points, intensities = points[idx], intensities[idx]
-
-        msg = self._to_message(points, intensities, sim_time)
-        for pub in self.publishers:
-            pub.publish(msg)
-        return len(points)
-
-    def _gather(self) -> tuple[np.ndarray | None, np.ndarray | None]:
-        """Collect and merge the returns from every prim."""
-        chunks = []
-        intensity_chunks = []
-
-        for annot in self.annotators:
-            data = annot.get_data()
-            if not isinstance(data, dict):
+        sent_total = 0
+        for prim_idx in range(len(self.prim_paths)):
+            pending = self._pending[prim_idx]
+            if not pending:
                 continue
-            if not self._logged_keys:
-                self.node.get_logger().info(f"annotator keys: {list(data.keys())}")
-                self._logged_keys = True
-            xyz = data.get("data")
-            if xyz is None or len(xyz) == 0:
-                continue
+            points = np.vstack([p for p, _ in pending])
+            intensities = np.concatenate([i for _, i in pending])
+            pending.clear()
 
-            xyz = np.asarray(xyz, dtype=np.float32).reshape(-1, 3)
-            chunks.append(xyz)
+            if len(points) > self.max_points:
+                # Stride rather than slice: a contiguous slice would take one
+                # part of the sweep, whereas striding preserves the pattern's
+                # shape.
+                idx = np.linspace(0, len(points) - 1, self.max_points).astype(np.int64)
+                points, intensities = points[idx], intensities[idx]
 
-            # The annotator may or may not supply intensity depending on the
-            # profile; fall back to a constant rather than inventing values.
-            intensity = data.get("intensity")
-            if intensity is not None and len(intensity) == len(xyz):
-                intensity_chunks.append(np.asarray(intensity, dtype=np.float32))
-            else:
-                intensity_chunks.append(np.full(len(xyz), 100.0, dtype=np.float32))
+            msg = self._to_message(points, intensities, sim_time)
+            self.publishers[prim_idx].publish(msg)
+            sent_total += len(points)
+        return sent_total
 
-        if not chunks:
+    def _gather_one(self, sensor, prim_idx: int) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Collect and filter one prim's returns."""
+        from isaacsim.sensors.experimental.rtx import parse_generic_model_output_data
+
+        data, _info = sensor.get_data("generic-model-output")
+        if data is None:
+            return None, None
+        gmo = parse_generic_model_output_data(data)
+        x, y, z = gmo.x, gmo.y, gmo.z
+        if x is None or len(x) == 0:
             return None, None
 
-        points = np.vstack(chunks)
-        intensities = np.concatenate(intensity_chunks)
+        if not self._logged_keys:
+            # frameOfReference says whether x/y/z are in the sensor's own
+            # frame (SENSOR) or already in world (WORLD). We publish in the
+            # sensor prim's frame (mid360_link, which the sensor is now
+            # mounted as - see rtx_lidar.spawn_mid360 call sites); if the
+            # engine ever hands back world-frame points, relabel to World so
+            # RViz doesn't apply the mid360_link transform a second time.
+            foref = getattr(gmo, "frameOfReference", None)
+            for_name = getattr(foref, "name", str(foref))
+            if for_name == "WORLD" and self.frame_id != "World":
+                self.node.get_logger().warn(
+                    f"GMO frameOfReference=WORLD; relabeling cloud frame_id "
+                    f"'{self.frame_id}' -> 'World'"
+                )
+                self.frame_id = "World"
+            self.node.get_logger().info(
+                f"GenericModelOutput numElements={gmo.numElements} "
+                f"frameOfReference={for_name}"
+            )
+            self._logged_keys = True
 
-        # Drop non-finite returns and the exact (0,0,0) origin points that
-        # stand for rays which hit nothing. Testing the norm rather than each
-        # component keeps legitimate returns that happen to lie on an axis.
-        finite = np.isfinite(points).all(axis=1)
-        nonzero = np.linalg.norm(points, axis=1) > 1e-6
-        keep = finite & nonzero
-        points, intensities = points[keep], intensities[keep]
-        if len(points) == 0:
+        xyz = np.stack([np.asarray(x), np.asarray(y), np.asarray(z)], axis=1).astype(np.float32)
+
+        # Diagnostics derived from xyz - GenericModelOutput has no per-point
+        # angle arrays, only per-frame min/maxAzRad summaries.
+        self.window_prim_counts[prim_idx] += len(xyz)
+        r = np.linalg.norm(xyz, axis=1)
+        nonzero_r = r > 1e-6
+        if np.any(nonzero_r):
+            az = np.degrees(np.arctan2(xyz[nonzero_r, 1], xyz[nonzero_r, 0]))
+            el = np.degrees(np.arcsin(np.clip(xyz[nonzero_r, 2] / r[nonzero_r], -1, 1)))
+            az_lo, az_hi = self.window_az_range[prim_idx]
+            self.window_az_range[prim_idx] = [min(az_lo, float(az.min())), max(az_hi, float(az.max()))]
+            el_lo, el_hi = self.window_el_range[prim_idx]
+            self.window_el_range[prim_idx] = [min(el_lo, float(el.min())), max(el_hi, float(el.max()))]
+
+        # GenericModelOutput has no plain intensity field (checked the
+        # compiled module's .pyi stub) - constant fallback, same as the old
+        # annotator path used when intensity was unavailable.
+        intensities = np.full(len(xyz), 100.0, dtype=np.float32)
+
+        # Drop non-finite returns, the exact (0,0,0) origin points that stand
+        # for rays which hit nothing, and anything beyond the sensor's own
+        # configured farRangeM - the latter can only be corrupted-buffer
+        # garbage (see max_range_m's docstring in __init__), never a real
+        # return. Testing the norm rather than each component keeps
+        # legitimate returns that happen to lie on an axis.
+        finite = np.isfinite(xyz).all(axis=1)
+        in_range = r <= self.max_range_m
+        keep = finite & nonzero_r & in_range
+        xyz, intensities = xyz[keep], intensities[keep]
+        if len(xyz) == 0:
             return None, None
 
-        return points, intensities
+        return xyz, intensities
 
     def _to_message(self, points: np.ndarray, intensities: np.ndarray, sim_time: float):
         msg = self._PointCloud2()
@@ -194,6 +246,20 @@ class RtxLidarPublisher:
         msg.is_dense = True
         msg.data = np.hstack([points, intensities[:, None]]).astype(np.float32).tobytes()
         return msg
+
+    def diagnostics_str(self) -> str:
+        """Per-prim raw counts + azimuth/elevation ranges (degrees) from the
+        most recently completed publish window. Diagnostic only."""
+        lines = []
+        for i, prim_path in enumerate(self.prim_paths):
+            n = self.last_window_prim_counts[i]
+            az_lo, az_hi = self.last_window_az_range[i]
+            el_lo, el_hi = self.last_window_el_range[i]
+            lines.append(
+                f"  [{i}] {prim_path}: raw_points={n} "
+                f"azimuth=[{az_lo:.1f},{az_hi:.1f}] elevation=[{el_lo:.1f},{el_hi:.1f}]"
+            )
+        return "\n".join(lines)
 
     def spin_once(self, timeout_sec: float = 0.0) -> None:
         """Service pending rclpy callbacks without blocking the sim loop."""
